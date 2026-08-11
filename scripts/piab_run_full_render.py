@@ -21,6 +21,12 @@ from harness_notify_failure import (
 from harness_overwrite_guard import HarnessOverwriteError, OVERWRITE_EXIT_CODE
 from harness_podcast_autocut_render import rebuild_interview_dsl
 from harness_autocut_common import render_dsl
+from harness_av_sync_lib import (
+    SYNC_CHOICE_FORCED_OFFSET,
+    ensure_forced_offset_prep,
+    full_interview_output_name,
+    render_full_with_prep,
+)
 from podcast_flag_phrases import report_flag_timestamps_after_render
 from piab_lib import (
     estimate_full_render,
@@ -92,7 +98,8 @@ def main() -> int:
 
         output_dir = Path(state["paths"]["output"])
         temp = Path(state["paths"]["temp"])
-        out_mp4 = output_dir / "Full Interview.mp4"
+        out_mp4 = output_dir / full_interview_output_name(state)
+        simplified = temp / "interview_transcript_simplified.json"
 
         if args.rebuild_dsl or not Path(state.get("interview_dsl", "")).is_file():
             dsl = rebuild_interview_dsl(state)
@@ -100,13 +107,24 @@ def main() -> int:
         else:
             dsl = Path(state["interview_dsl"])
 
-        render_dsl(
-            dsl,
-            out_mp4,
-            temp,
-            max_seconds=None,
-            allow_overwrite=args.allow_overwrite,
-        )
+        if state.get("sync_offset_choice") == SYNC_CHOICE_FORCED_OFFSET:
+            prep = ensure_forced_offset_prep(state, allow_overwrite=args.allow_overwrite)
+            render_full_with_prep(
+                interview_dsl=dsl,
+                prep=prep,
+                simplified_json=simplified,
+                output_mp4=out_mp4,
+                segments_dir=temp / "av-sync" / "render-segments" / "forced-offset-full",
+                allow_overwrite=args.allow_overwrite,
+            )
+        else:
+            render_dsl(
+                dsl,
+                out_mp4,
+                temp,
+                max_seconds=None,
+                allow_overwrite=args.allow_overwrite,
+            )
 
         flag_summary = report_flag_timestamps_after_render(
             Path(dsl),

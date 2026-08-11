@@ -20,6 +20,10 @@ PIAB prep/full render also write **`Temp/harness-FAILURE.json`** and raise a **W
 
 Do not busy-wait with sub-minute polling. Five minutes is the default cadence for these jobs unless the user asks for a different interval.
 
+## PIAB / podcast autocut: Host–Guest audio “swapped”
+
+When the user says Host and Guest **audio** are swapped, reversed, or on the wrong mic in the edit, assume **Raw and Input are labeled correctly**. Fix with speaker-ID remapping only (`piab_fix_audio_speaker_swap.py` for PIAB, or `--swap-speaker-ids` + DSL + 1-min render for standalone autocut). **Do not** swap Raw audio files or re-run video-sync / full prep unless the user explicitly says the **Raw** mic or camera files were mislabeled during labeling.
+
 ## Crash dumps (this machine)
 
 For post-mortem debugging of BSODs / kernel bugchecks, newer kernel dumps on this machine are kept under **`D:\Crash Report`** (user-configured location). When investigating a render-time crash, check that folder for `.dmp` files and timestamps that match the incident.

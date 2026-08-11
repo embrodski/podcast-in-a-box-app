@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -19,7 +20,10 @@ INTRO_RE = re.compile(r"\bintro\b", re.IGNORECASE)
 READING_RE = re.compile(r"\breading\b", re.IGNORECASE)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SYNC_SCRIPT = REPO_ROOT / "scripts" / "sync_conversation_wavs.py"
-ELEVENLABS_KEY_FILE = REPO_ROOT / "ElevenLabs 100k Key.txt"
+ELEVENLABS_KEY_FILENAME = "ElevenLabs 100k Key.txt"
+ELEVENLABS_KEY_FILE = REPO_ROOT / ELEVENLABS_KEY_FILENAME
+# Fallback PIAB pipeline repo on this machine (see README); also PIAB_UPSTREAM_ROOT env.
+DEFAULT_UPSTREAM_REPO_ROOT = Path(r"E:\PodcastRoom\Cursor\automated-video-editing")
 CLEAN_RE = re.compile(r"clean", re.IGNORECASE)
 WIDE_RE = re.compile(r"\bwide\b", re.IGNORECASE)
 FRONT_RE = re.compile(r"\bfront\b", re.IGNORECASE)
@@ -154,6 +158,10 @@ def step_state(
     elif status == "skipped":
         step["completed_at"] = utc_now_iso()
         step["skipped"] = True
+    elif status == "in_progress" and "started_at" not in step:
+        step["started_at"] = prior.get("started_at") or utc_now_iso()
+    if "started_at" in prior and "started_at" not in step:
+        step["started_at"] = prior["started_at"]
     elif "completed_at" in prior and status not in ("completed", "skipped"):
         step["completed_at"] = prior["completed_at"]
     return step
@@ -223,12 +231,44 @@ def combined_audio_output_name(wav1: Path) -> str:
     return f"{first_word} Combined Audio.wav"
 
 
+def elevenlabs_key_file_candidates() -> list[Path]:
+    """Key file locations checked in order (deduplicated)."""
+    roots: list[Path] = [REPO_ROOT]
+    upstream = os.environ.get("PIAB_UPSTREAM_ROOT", "").strip()
+    if upstream:
+        roots.append(Path(upstream))
+    else:
+        roots.append(DEFAULT_UPSTREAM_REPO_ROOT)
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for root in roots:
+        path = root.resolve() / ELEVENLABS_KEY_FILENAME
+        if path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
+
+
+def find_elevenlabs_key_file() -> Path | None:
+    for path in elevenlabs_key_file_candidates():
+        if path.is_file():
+            return path
+    return None
+
+
 def read_elevenlabs_api_key() -> str:
-    if not ELEVENLABS_KEY_FILE.is_file():
-        raise FileNotFoundError(f"Missing API key file: {ELEVENLABS_KEY_FILE}")
-    key = ELEVENLABS_KEY_FILE.read_text(encoding="utf-8").strip()
+    env_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    key_path = find_elevenlabs_key_file()
+    if key_path is None:
+        searched = ", ".join(str(path) for path in elevenlabs_key_file_candidates())
+        raise FileNotFoundError(
+            f"Missing ElevenLabs API key. Set ELEVENLABS_API_KEY or create one of: {searched}"
+        )
+    key = key_path.read_text(encoding="utf-8").strip()
     if not key:
-        raise ValueError(f"API key file is empty: {ELEVENLABS_KEY_FILE}")
+        raise ValueError(f"API key file is empty: {key_path}")
     return key
 
 
@@ -281,6 +321,20 @@ def podcast_swap_speaker_ids_cli_args(state: dict) -> list[str]:
     if state.get("swap_speaker_ids"):
         return ["--swap-speaker-ids"]
     return []
+
+
+def pick_interview_videos(prepped_videos: list[str]) -> tuple[Path, Path, Path]:
+    """Return (host/ben, guest, wide) paths from prepped video filenames."""
+    paths = [Path(p) for p in prepped_videos]
+    ben = next((p for p in paths if BEN_HOST_RE.search(p.name)), None)
+    wide = next((p for p in paths if WIDE_RE.search(p.name)), None)
+    guest = next(
+        (p for p in paths if not BEN_HOST_RE.search(p.name) and not WIDE_RE.search(p.name)),
+        None,
+    )
+    if not ben or not guest or not wide:
+        raise FileNotFoundError(f"Could not find Ben/Guest/Wide prepped in {prepped_videos}")
+    return ben, guest, wide
 
 
 def podcast_phrase_cli_args(state: dict) -> list[str]:

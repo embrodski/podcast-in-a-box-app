@@ -124,5 +124,10 @@ def delivery_from_cli(*, email: str, confirm: bool) -> dict:
     return delivery_enabled(normalized)
 
 
+def delivery_for_app(*, email: str) -> dict:
+    """Non-interactive delivery opt-in from the GUI (single email field)."""
+    return delivery_from_cli(email=email, confirm=True)
+
+
 def merge_delivery_into_state(state: dict, delivery: dict) -> None:
     state["delivery"] = delivery

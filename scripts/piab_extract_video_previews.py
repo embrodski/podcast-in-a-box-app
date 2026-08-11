@@ -35,7 +35,7 @@ def main() -> int:
         for camera_number, item in enumerate(video_items, start=1):
             src = Path(item["path"])
             if not src.is_file():
-                # Already moved into Raw — try standard names / original map later.
+                # Already copied into Raw — try standard names / original map later.
                 continue
             camera_label = f"Camera {camera_number}"
             out = preview_dir / f"{camera_label}.jpg"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply Host/Guest/Wide labels: move MultiCorder files into Raw with standard names."""
+"""Apply Host/Guest/Wide labels: copy MultiCorder files into Raw with standard names."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _parse_labels(raw: str) -> dict[str, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Apply PIAB video/audio labels and move files.")
+    parser = argparse.ArgumentParser(description="Apply PIAB video/audio labels and copy files into Raw.")
     parser.add_argument("working_folder", type=Path)
     parser.add_argument(
         "--video-labels-json",
@@ -102,7 +102,7 @@ def main() -> int:
             "moved_raw": state.get("moved_raw"),
             "estimate_prep": state.get("estimate_prep"),
             "message": (
-                f"Files moved into Raw. Prep through 1-min test will take "
+                f"Files copied into Raw (sources left in place). Prep through 1-min test will take "
                 f"{eta['summary']} (source ~{eta['breakdown']['source_duration_human']}). "
                 "Ask the user to confirm before starting prep."
             ),

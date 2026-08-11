@@ -58,9 +58,15 @@ from harness_overwrite_guard import HarnessOverwriteError, OVERWRITE_EXIT_CODE, 
 
 from harness_transcribe_prepped import _run_transcribe
 
+from harness_av_sync_lib import (
+    ONE_MIN_DEFAULT,
+    load_failed_sync_confidence_flag,
+    maybe_write_sync_confidence_flag,
+    run_sync_ab_one_min_tests,
+)
 from harness_video_sync import find_scope_videos, run_video_sync
 
-from piab_lib import load_piab_state, mark_step, print_json, save_piab_state
+from piab_lib import load_piab_state, mark_piab_sync_ab_steps, mark_step, print_json, save_piab_state
 
 from piab_resume import (
 
@@ -136,8 +142,14 @@ def _should_run(step_id: str, plan: PrepResumePlan) -> bool:
 
     return PREP_STEP_ORDER.index(step_id) >= PREP_STEP_ORDER.index(plan.start_step)
 
+def _begin_prep_step(state: dict, working: Path, step_id: str, title: str) -> None:
+    mark_step(state, step_id, title=title, status="in_progress")
+    state["resume_at"] = step_id
+    save_piab_state(working, state)
 
 
+def _finish_prep_step(state: dict, working: Path) -> None:
+    save_piab_state(working, state)
 
 
 def _handle_failure(
@@ -222,11 +234,9 @@ def _render_one_min_test(
 
     from harness_autocut_common import render_dsl, run_cmd
 
-    from harness_episode_lib import REPO_ROOT, podcast_phrase_cli_args, podcast_swap_speaker_ids_cli_args
-
     from episode_segments import MAIN_SEGMENT_KEY, segments_path, upsert_segment
 
-    from harness_podcast_autocut_test import _pick_interview_videos
+    from harness_episode_lib import REPO_ROOT, pick_interview_videos, podcast_phrase_cli_args, podcast_swap_speaker_ids_cli_args
 
 
 
@@ -236,7 +246,7 @@ def _render_one_min_test(
 
     temp.mkdir(parents=True, exist_ok=True)
 
-    ben, guest, wide = _pick_interview_videos(state["main_prepped"]["prepped_videos"])
+    ben, guest, wide = pick_interview_videos(state["main_prepped"]["prepped_videos"])
 
     audio_wav = Path(state["main_prepped"]["prepped_audio_wav"])
 
@@ -246,9 +256,7 @@ def _render_one_min_test(
 
     interview_dsl = temp / "interview.dsl"
 
-    out_mp4 = output_dir / "1 Min Test.mp4"
-
-    for path in (simplified, interview_dsl, out_mp4):
+    for path in (simplified, interview_dsl):
 
         refuse_overwrite(path, allow_overwrite=allow_overwrite)
 
@@ -338,25 +346,59 @@ def _render_one_min_test(
 
     )
 
-    render_dsl(
-
-        interview_dsl,
-
-        out_mp4,
-
-        temp,
-
-        max_seconds=60,
-
-        allow_overwrite=allow_overwrite,
-
-    )
-
-
-
-    state["podcast_autocut_test_mp4"] = str(out_mp4)
-
     state["interview_dsl"] = str(interview_dsl)
+
+    sync_flag = load_failed_sync_confidence_flag(temp)
+
+    if sync_flag is None and state.get("sync_confidence_failed"):
+
+        sync_flag = {"failed": True}
+
+
+
+    if sync_flag:
+
+        ab_result = run_sync_ab_one_min_tests(state, allow_overwrite=allow_overwrite)
+
+        mark_piab_sync_ab_steps(state, ab_result=ab_result)
+
+        out_mp4 = Path(ab_result["one_min_no_offset"])
+
+    else:
+
+        out_mp4 = output_dir / ONE_MIN_DEFAULT
+
+        render_dsl(
+
+            interview_dsl,
+
+            out_mp4,
+
+            temp,
+
+            max_seconds=60,
+
+            allow_overwrite=allow_overwrite,
+
+        )
+
+        state["podcast_autocut_test_mp4"] = str(out_mp4)
+
+        mark_step(
+
+            state,
+
+            "11_one_min_approval",
+
+            title="1-min test approval",
+
+            status="awaiting_user",
+
+        )
+
+        state["resume_at"] = "11_one_min_approval"
+
+
 
     mark_step(
 
@@ -370,47 +412,9 @@ def _render_one_min_test(
 
         output_mp4=str(out_mp4),
 
-    )
-
-    mark_step(
-
-        state,
-
-        "11_one_min_approval",
-
-        title="1-min test approval",
-
-        status="awaiting_user",
+        sync_ab=bool(sync_flag),
 
     )
-
-    mark_step(
-
-        state,
-
-        "15_podcast_autocut_test",
-
-        title="Podcast autocut 1-min test",
-
-        status="completed",
-
-        output_mp4=str(out_mp4),
-
-    )
-
-    mark_step(
-
-        state,
-
-        "18_interview_test_approval",
-
-        title="Interview 1-min test approval",
-
-        status="awaiting_user",
-
-    )
-
-    state["resume_at"] = "11_one_min_approval"
 
     save_piab_state(working, state)
 
@@ -598,6 +602,8 @@ def main() -> int:
 
             current_title = PREP_STEP_TITLES[current_step]
 
+            _begin_prep_step(state, working, current_step, current_title)
+
             if args.use_clean_pair:
 
                 wav1 = raw / "Host Clean Audio.wav"
@@ -646,6 +652,8 @@ def main() -> int:
 
             )
 
+            _finish_prep_step(state, working)
+
         else:
 
             combined = Path(state["main_combined_audio"])
@@ -657,6 +665,8 @@ def main() -> int:
             current_step = "07_deroom_placeholder"
 
             current_title = PREP_STEP_TITLES[current_step]
+
+            _begin_prep_step(state, working, current_step, current_title)
 
             if combined is None:
 
@@ -710,6 +720,8 @@ def main() -> int:
 
             )
 
+            _finish_prep_step(state, working)
+
         else:
 
             clean = Path(state["main_clean_audio"])
@@ -721,6 +733,8 @@ def main() -> int:
             current_step = "08_video_sync"
 
             current_title = PREP_STEP_TITLES[current_step]
+
+            _begin_prep_step(state, working, current_step, current_title)
 
             if clean is None:
 
@@ -742,6 +756,10 @@ def main() -> int:
 
             state["main_prepped"] = result
 
+            if result.get("sync_reports"):
+
+                maybe_write_sync_confidence_flag(state, result["sync_reports"], scope="main")
+
             mark_step(
 
                 state,
@@ -756,6 +774,8 @@ def main() -> int:
 
             )
 
+            _finish_prep_step(state, working)
+
         else:
 
             result = state["main_prepped"]
@@ -767,6 +787,8 @@ def main() -> int:
             current_step = "09_transcribe"
 
             current_title = PREP_STEP_TITLES[current_step]
+
+            _begin_prep_step(state, working, current_step, current_title)
 
             if not result or not result.get("prepped_audio_wav"):
 
@@ -836,6 +858,8 @@ def main() -> int:
 
             current_title = PREP_STEP_TITLES[current_step]
 
+            _begin_prep_step(state, working, current_step, current_title)
+
             out_mp4 = _render_one_min_test(
 
                 state,
@@ -894,9 +918,10 @@ def main() -> int:
 
                 f"1 Min Test is ready for review: {out_mp4}. "
 
-                "Stop and wait for user approval. If Host/Guest cameras feel swapped, "
-
-                "run piab_swap.py --speaker-ids toggle and re-run the 1-min test."
+                "Stop and wait for user approval. If Host/Guest audio or cameras "
+                "sound swapped in the edit (Raw files labeled correctly), run "
+                "piab_fix_audio_speaker_swap.py. If Raw Host/Guest files were "
+                "mislabeled during labeling, use piab_swap.py --files instead."
 
             ),
 

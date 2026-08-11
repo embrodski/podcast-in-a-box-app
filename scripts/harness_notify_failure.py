@@ -9,6 +9,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from piab_disk_errors import summarize_disk_full_if_applicable, source_duration_sec_from_folder
+
 FAILURE_JSON_NAME = "harness-FAILURE.json"
 FAILURE_TXT_NAME = "harness-FAILURE.txt"
 
@@ -26,8 +28,20 @@ def _xml_escape(text: str) -> str:
     )
 
 
-def summarize_error(exc: BaseException) -> str:
+def summarize_error(
+    exc: BaseException,
+    *,
+    working_folder: Path | None = None,
+) -> str:
     """Return a short, user-facing summary of ``exc``."""
+    disk_summary = summarize_disk_full_if_applicable(
+        exc,
+        working_folder=working_folder,
+        source_duration_sec=source_duration_sec_from_folder(working_folder),
+    )
+    if disk_summary:
+        return disk_summary
+
     text = str(exc).strip()
     if not text:
         return type(exc).__name__
@@ -165,7 +179,7 @@ def notify_harness_failure(
     Write failure marker files under ``temp_dir`` and alert the user immediately.
     """
     error_detail = str(exc).strip() or repr(exc)
-    error_summary = summarize_error(exc)
+    error_summary = summarize_error(exc, working_folder=working_folder)
     json_path, txt_path = write_failure_artifacts(
         temp_dir,
         pipeline=pipeline,

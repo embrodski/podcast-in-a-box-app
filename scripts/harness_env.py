@@ -7,6 +7,20 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ENV_PATH = REPO_ROOT / ".env"
+DEFAULT_UPSTREAM_REPO_ROOT = Path(r"E:\PodcastRoom\Cursor\automated-video-editing")
+
+
+def upstream_env_path() -> Path:
+    raw = os.environ.get("PIAB_UPSTREAM_ROOT", "").strip()
+    root = Path(raw) if raw else DEFAULT_UPSTREAM_REPO_ROOT
+    return root.resolve() / ".env"
+
+
+def _apply_dotenv_file(env_path: Path, *, override: bool) -> None:
+    values = parse_dotenv(env_path.read_text(encoding="utf-8"))
+    for key, value in values.items():
+        if override or key not in os.environ:
+            os.environ[key] = value
 
 
 def parse_dotenv(text: str) -> dict[str, str]:
@@ -35,19 +49,24 @@ def load_harness_env(
     override: bool = False,
 ) -> Path | None:
     """
-    Load ``path`` (default repo ``.env``) into ``os.environ``.
+    Load repo ``.env`` (and upstream fallback ``.env``) into ``os.environ``.
 
-    Returns the path loaded, or ``None`` if the file does not exist.
-    Existing environment variables are kept unless ``override`` is True.
+    Local repo ``.env`` is loaded first; upstream values fill gaps only unless
+    ``override`` is True for the primary file.
+
+    Returns the primary path loaded, or the upstream path, or ``None``.
     """
+    loaded: Path | None = None
     env_path = (path or DEFAULT_ENV_PATH).resolve()
-    if not env_path.is_file():
-        return None
-    values = parse_dotenv(env_path.read_text(encoding="utf-8"))
-    for key, value in values.items():
-        if override or key not in os.environ:
-            os.environ[key] = value
-    return env_path
+    if env_path.is_file():
+        _apply_dotenv_file(env_path, override=override)
+        loaded = env_path
+
+    upstream_path = upstream_env_path()
+    if upstream_path.is_file() and upstream_path != env_path:
+        _apply_dotenv_file(upstream_path, override=False)
+
+    return loaded or (upstream_path if upstream_path.is_file() else None)
 
 
 def merge_env_file(path: Path, updates: dict[str, str]) -> None:

@@ -4,7 +4,9 @@ description: >-
   Walk-in podcast pipeline: scan MultiCorder dumps in E:\PodcastRoom, label
   Host/Guest/Wide video and Host/Guest audio, then run conversation-sync,
   Combined-as-Clean (DeRoom placeholder), video-sync, ElevenLabs transcribe,
-  podcast autocut 1-min approval, and full interview render. Use when the user
+  podcast autocut 1-min approval, and full interview render. If Host/Guest audio
+  sounds swapped in the edit, run piab_fix_audio_speaker_swap.py (speaker-ID remap
+  + 1-min re-render only; never swap Raw audio unless Raw was mislabeled). Use when the user
   says "Lighthaven Podcast In A Box", "podcast in a box", "PIAB", or wants a
   stripped-down interview-only edit from fresh MultiCorder files.
 ---
@@ -317,7 +319,7 @@ Build JSON maps of absolute source path → role, then:
 python scripts/piab_apply_labels.py "E:\PodcastRoom\<name>" --video-labels-json "<json>" --audio-labels-json "<json>"
 ```
 
-Script moves files into `Raw` and prints **Estimate A** (prep through 1-min test).
+Script copies files into `Raw` (sources stay in place) and prints **Estimate A** (prep through 1-min test).
 
 **Open `Raw`** (`explorer.exe`), give plain path + optional link, tell the user
 the estimate, then **wait for confirmation** before prep.
@@ -370,15 +372,47 @@ the user:
 
 > 1 Min Test is ready for review: `E:\PodcastRoom\<name>\Output\1 Min Test.mp4`
 
+When **`Temp/failed-sync-confidence.json`** exists, prep renders **two** tests instead:
+
+- **`1 Min Test no offset.mp4`** — start-aligned sync (no detected offset applied)
+- **`1 Min Test forced audio offset.mp4`** — detected lags forced on
+
+**Stop at step 10a** (`resume_at`: **`10a_sync_offset_approval`**). The GUI shows **F2a**
+(side-by-side players). User picks which sounds better, then confirms the chosen test on **F2**.
+
+```powershell
+python scripts/piab_record_sync_offset_choice.py "E:\PodcastRoom\<name>" --choice start_aligned
+python scripts/piab_record_sync_offset_choice.py "E:\PodcastRoom\<name>" --choice forced_offset
+```
+
+See **`docs/av-sync-confidence-fallback.md`** in the upstream PIAB repo.
+
 **Stop and wait.**
 
 ### 1-min approval loop
 
+**Host/Guest audio swapped in the edit (default interpretation):** When the user says
+Host and Guest **audio** are swapped, reversed, or on the wrong mic **in the cut** —
+or similar phrasing — assume **Raw and Input files are labeled correctly**. Do **not**
+swap Raw audio or re-run prep. Run:
+
+```powershell
+python scripts/piab_fix_audio_speaker_swap.py "E:\PodcastRoom\<name>" --allow-overwrite
+```
+
+In the **GUI app**, F2 **Host/Guest swapped in edit** calls the same backend.
+
+That toggles transcript speaker-id mapping, re-converts the existing detail JSON with
+`--swap-speaker-ids`, regenerates `interview.dsl`, and re-renders **`1 Min Test.mp4`**
+only (~minutes). Unchanged on disk: `Host Video-prepped.mp4`, `Guest Video-prepped.mp4`,
+`Wide Video-prepped.mp4`, `Host Clean Audio-prepped.wav`, and the detail transcript JSON.
+
 | User intent | Action |
 |-------------|--------|
 | Looks good | Go to Estimate B |
-| Host/Guest cameras feel swapped | `python scripts/piab_swap.py "<folder>" --speaker-ids toggle` then `python scripts/piab_rerun_one_min.py "<folder>" --allow-overwrite` (after overwrite approval) |
-| Wrong Raw Host/Guest files | `piab_swap.py --files video` and/or `--files audio`, then re-run **full prep** (`piab_run_prep.py --allow-overwrite` after approval) |
+| Host/Guest **audio swapped / reversed / wrong mic in the edit** | **`piab_fix_audio_speaker_swap.py --allow-overwrite`** (after overwrite approval) or GUI F2 |
+| Host/Guest **cameras** feel swapped (same speaker-ID fix) | Same as audio swapped |
+| Wrong **Raw** Host/Guest files (mislabeled during Step 2–3) | `piab_swap.py --files video` and/or `--files audio`, then re-run **full prep** (`piab_run_prep.py --allow-overwrite` after approval) |
 | Other fixes | Adjust and re-run 1-min only when possible |
 
 ---
@@ -422,7 +456,8 @@ Read `podcast-in-a-box.json` → `resume_at` and `steps`.
 | `04_label_audio` | Audio previews / labels |
 | `05_estimate_prep` | Show Estimate A; on OK run prep |
 | `06_conversation_sync` … `10_one_min_test` | Run `piab_run_prep.py --resume` (or `piab_start_session.py` → resume) |
-| `11_one_min_approval` | Review 1 Min Test |
+| `10a_sync_offset_approval` | A/B sync offset choice (when confidence failed) → GUI **F2a** |
+| `11_one_min_approval` | Review 1 Min Test → GUI **F2** |
 | `12_estimate_full` | Show Estimate B; on OK full render |
 | `14_done` | Finished |
 

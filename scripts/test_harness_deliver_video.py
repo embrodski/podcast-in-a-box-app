@@ -14,6 +14,8 @@ from harness_deliver_video import (
     FULL_INTERVIEW_TRANSCRIPT_JSON,
     deliver_piab_full_interview,
     delivery_is_enabled,
+    resolve_delivery_short_url,
+    send_delivery_link_email,
 )
 
 
@@ -99,6 +101,42 @@ class DeliverVideoTests(unittest.TestCase):
             self.assertEqual(payload["recipient_email"], "guest@example.com")
             self.assertEqual(result["frameio"]["status"], "completed")
             mock_mail.assert_called_once()
+
+    @patch("harness_deliver_video.send_delivery_success_email")
+    @patch("harness_deliver_video.SmtpConfig.from_env")
+    def test_send_link_email_reuses_short_url(self, mock_smtp_env, mock_mail) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._state(Path(tmp))
+            state["delivery"]["frameio"] = {
+                "status": "completed",
+                "short_url": "https://f.io/abc",
+            }
+            recipient = send_delivery_link_email(
+                state,
+                to_addr="Other@Example.com",
+                print_fn=lambda *_args, **_kwargs: None,
+            )
+            self.assertEqual(recipient, "other@example.com")
+            self.assertIn("other@example.com", state["delivery"]["additional_emails"])
+            mock_mail.assert_called_once()
+            _args, kwargs = mock_mail.call_args
+            self.assertEqual(kwargs["to_addr"], "other@example.com")
+            self.assertEqual(kwargs["short_url"], "https://f.io/abc")
+
+    def test_resolve_short_url_from_output_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._state(Path(tmp))
+            output = Path(state["paths"]["output"])
+            record = {
+                "short_url": "https://f.io/from-json",
+                "recipient_email": "guest@example.com",
+            }
+            (output / FULL_INTERVIEW_DELIVERY_JSON).write_text(
+                json.dumps(record),
+                encoding="utf-8",
+            )
+            state["delivery"] = {"enabled": True, "email": "guest@example.com"}
+            self.assertEqual(resolve_delivery_short_url(state), "https://f.io/from-json")
 
 
 if __name__ == "__main__":

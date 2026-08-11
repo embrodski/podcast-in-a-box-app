@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,6 +43,65 @@ class AudibleContentTests(unittest.TestCase):
         self.assertLess(_max_window_rms(silent, rate), 0.008)
         self.assertGreater(_max_window_rms(loud, rate), 0.008)
 
+    def test_find_loud_clip_starts_enforces_min_separation(self) -> None:
+        from piab_lib import MIN_PREVIEW_CLIP_SEPARATION_SEC, find_loud_clip_starts
+
+        fd, name = tempfile.mkstemp(suffix=".wav")
+        path = Path(name)
+        os.close(fd)
+        try:
+            with (
+                patch("piab_lib.ffprobe_duration", return_value=120.0),
+                patch("piab_lib.find_loud_clip_start", side_effect=[30.0, 30.0]),
+                patch("piab_lib.find_loud_clip_start_after", return_value=30.0),
+                patch("piab_lib.find_loud_clip_start_before", return_value=18.0),
+            ):
+                starts = find_loud_clip_starts(path)
+            self.assertEqual(len(starts), 2)
+            self.assertGreaterEqual(
+                abs(starts[1] - starts[0]),
+                MIN_PREVIEW_CLIP_SEPARATION_SEC,
+            )
+            self.assertEqual(starts[1], 18.0)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_find_loud_clip_starts_uses_before_when_after_unavailable(self) -> None:
+        from piab_lib import find_loud_clip_starts
+
+        fd, name = tempfile.mkstemp(suffix=".wav")
+        path = Path(name)
+        os.close(fd)
+        try:
+            with (
+                patch("piab_lib.ffprobe_duration", return_value=35.0),
+                patch("piab_lib.find_loud_clip_start", side_effect=[30.0, 30.0]),
+                patch("piab_lib.find_loud_clip_start_after", return_value=30.0),
+                patch("piab_lib.find_loud_clip_start_before", return_value=18.0),
+            ):
+                starts = find_loud_clip_starts(path)
+            self.assertEqual(starts, [30.0, 18.0])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_find_loud_clip_starts_prefers_after_when_closer_to_target(self) -> None:
+        from piab_lib import find_loud_clip_starts
+
+        fd, name = tempfile.mkstemp(suffix=".wav")
+        path = Path(name)
+        os.close(fd)
+        try:
+            with (
+                patch("piab_lib.ffprobe_duration", return_value=120.0),
+                patch("piab_lib.find_loud_clip_start", side_effect=[30.0, 32.0]),
+                patch("piab_lib.find_loud_clip_start_after", return_value=72.0),
+                patch("piab_lib.find_loud_clip_start_before", return_value=10.0),
+            ):
+                starts = find_loud_clip_starts(path)
+            self.assertEqual(starts, [30.0, 72.0])
+        finally:
+            path.unlink(missing_ok=True)
+
 
 class ResolveScanDirTests(unittest.TestCase):
     def test_prefers_working_folder_when_it_has_sources(self) -> None:
@@ -72,8 +132,17 @@ class ResolveScanDirTests(unittest.TestCase):
             with patch("piab_lib.list_top_level_multicorder", side_effect=fake_list):
                 self.assertEqual(resolve_scan_dir(root=root, working=working), root.resolve())
 
+    def test_falls_back_to_root_when_working_folder_does_not_exist_yet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            working = root / "2026-07-29_1545"
 
-class ClusterTests(unittest.TestCase):
+            def fake_list(path: Path, skipped=None) -> list[MediaInfo]:
+                self.assertEqual(path, root.resolve())
+                return [_info("parent.mp4", "video", 1, 100)]
+
+            with patch("piab_lib.list_top_level_multicorder", side_effect=fake_list):
+                self.assertEqual(resolve_scan_dir(root=root, working=working), root.resolve())
     def test_picks_recent_cluster(self) -> None:
         old = [
             _info("MultiCorder1 - DeckLink Quad HDMI Recorder old.mp4", "video", 1000, 100),
@@ -140,14 +209,106 @@ class ClassifyNameTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             video = root / "MultiCorder1 - DeckLink Quad HDMI Recorder (1).MP4"
+            mini = root / "MultiCorder5 - DeckLink Mini Recorder 4K 5 - 29 July 2026.mp4"
             audio = root / "MultiCorder2 - Output 3 (mix).wav"
             other = root / "random.mp4"
-            video.write_bytes(b"x")
-            audio.write_bytes(b"x")
-            other.write_bytes(b"x")
+            for path in (video, mini, audio, other):
+                path.write_bytes(b"x")
             self.assertEqual(classify_multicorder(video), "video")
+            self.assertEqual(classify_multicorder(mini), "video")
             self.assertEqual(classify_multicorder(audio), "audio")
             self.assertIsNone(classify_multicorder(other))
+
+
+class DiscoverClustersTests(unittest.TestCase):
+    def test_finds_multiple_sessions(self) -> None:
+        from piab_lib import discover_all_clusters
+
+        old = [
+            _info("MultiCorder1 - DeckLink Quad HDMI Recorder old.mp4", "video", 1000, 100),
+            _info("MultiCorder2 - Output 1 old.wav", "audio", 1001, 100),
+            _info("MultiCorder3 - DeckLink Mini Recorder 4K old2.mp4", "video", 1002, 100),
+        ]
+        new = [
+            _info("MultiCorder1 - DeckLink Quad HDMI Recorder a.mp4", "video", 5000, 1873.0),
+            _info("MultiCorder2 - DeckLink Quad HDMI Recorder b.mp4", "video", 5005, 1873.5),
+            _info("MultiCorder3 - DeckLink Quad HDMI Recorder c.mp4", "video", 5010, 1872.2),
+            _info("MultiCorder4 - Output 1 a.wav", "audio", 5002, 1873.1),
+            _info("MultiCorder5 - Output 2 b.wav", "audio", 5008, 1873.0),
+        ]
+        clusters = discover_all_clusters(new + old)
+        self.assertEqual(len(clusters), 2)
+        self.assertEqual(len(clusters[0]), 5)
+        self.assertEqual(len(clusters[1]), 3)
+
+
+class CopyLabeledMediaTests(unittest.TestCase):
+    def test_copy_leaves_sources_in_place(self) -> None:
+        from piab_lib import move_labeled_media
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump = root / "dump"
+            dump.mkdir()
+            working = root / "Session"
+            raw = working / "Raw"
+            raw.mkdir(parents=True)
+
+            host_video = dump / "MultiCorder1 - DeckLink Quad HDMI Recorder (1) 1.mp4"
+            guest_video = dump / "MultiCorder2 - DeckLink Quad HDMI Recorder (2) 2.mp4"
+            wide_video = dump / "MultiCorder3 - DeckLink Quad HDMI Recorder (3) 3.mp4"
+            host_audio = dump / "MultiCorder6 - Output 1 a.wav"
+            guest_audio = dump / "MultiCorder7 - Output 2 b.wav"
+            for path in (host_video, guest_video, wide_video, host_audio, guest_audio):
+                path.write_bytes(b"x" * 128)
+
+            state = {
+                "paths": {"raw": str(raw)},
+            }
+            move_labeled_media(
+                state,
+                video_labels={
+                    str(host_video): "host",
+                    str(guest_video): "guest",
+                    str(wide_video): "wide",
+                },
+                audio_labels={
+                    str(host_audio): "host",
+                    str(guest_audio): "guest",
+                },
+            )
+
+            for path in (host_video, guest_video, wide_video, host_audio, guest_audio):
+                self.assertTrue(path.is_file(), f"source should remain: {path}")
+            self.assertTrue((raw / "Host Raw Video.mp4").is_file())
+            self.assertTrue((raw / "Guest Raw Audio.wav").is_file())
+            self.assertEqual(len(state["original_paths"]), 5)
+            self.assertEqual(state["copied_raw"]["host"], str((raw / "Host Raw Video.mp4").resolve()))
+
+    def test_restore_moved_sources_from_raw_copies(self) -> None:
+        from piab_lib import restore_moved_sources
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump = root / "dump"
+            dump.mkdir()
+            working = root / "Session"
+            raw = working / "Raw"
+            raw.mkdir(parents=True)
+            original = dump / "MultiCorder1 - DeckLink Quad HDMI Recorder (1) 1.mp4"
+            raw_copy = raw / "Host Raw Video.mp4"
+            raw_copy.write_bytes(b"video")
+
+            state = {
+                "paths": {"raw": str(raw)},
+                "original_paths": {
+                    "Host Raw Video.mp4": str(original),
+                },
+            }
+            restored = restore_moved_sources(state, working, allow_overwrite=True)
+            self.assertEqual(len(restored), 1)
+            self.assertTrue(original.is_file())
+            self.assertTrue(raw_copy.is_file())
 
 
 class PiabStatePathTests(unittest.TestCase):

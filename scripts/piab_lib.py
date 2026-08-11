@@ -25,7 +25,7 @@ from harness_episode_lib import (
 DEFAULT_SCAN_ROOT = Path(r"E:\PodcastRoom")
 
 VIDEO_NAME_RE = re.compile(
-    r"^MultiCorder\d+\s*-\s*DeckLink Quad HDMI Recorder",
+    r"^MultiCorder\d+\s*-\s*DeckLink",
     re.IGNORECASE,
 )
 AUDIO_NAME_RE = re.compile(
@@ -54,6 +54,7 @@ EST_PAD_FRACTION = 0.25  # widen into a range
 
 DEFAULT_PREVIEW_CLIP_SEC = 5.0
 DEFAULT_PREVIEW_SECTIONS = (0.25, 0.62)
+MIN_PREVIEW_CLIP_SEPARATION_SEC = 10.0
 MIN_AUDIBLE_RMS = 0.008
 
 
@@ -158,36 +159,31 @@ def list_top_level_multicorder(
     return out
 
 
-def cluster_session_files(
-    files: list[MediaInfo],
+def _grow_cluster_from_seed(
+    seed: MediaInfo,
+    candidates: list[MediaInfo],
     *,
-    mtime_tol_sec: float = 60.0,
-    duration_tol_sec: float = 2.0,
+    mtime_tol_sec: float,
 ) -> list[MediaInfo]:
-    """
-    Return the most recent session cluster.
-
-    A cluster is the connected set of files around the newest mtime where each
-    included file is within ``mtime_tol_sec`` of some member, and all durations
-    are within ``duration_tol_sec`` of the cluster median duration.
-    """
-    if not files:
-        raise FileNotFoundError("No MultiCorder video/audio files found.")
-
-    by_mtime = sorted(files, key=lambda f: f.mtime, reverse=True)
-    seed = by_mtime[0]
     cluster = [seed]
     changed = True
     while changed:
         changed = False
         members = {f.path for f in cluster}
-        for cand in by_mtime:
+        for cand in candidates:
             if cand.path in members:
                 continue
             if any(abs(cand.mtime - m.mtime) <= mtime_tol_sec for m in cluster):
                 cluster.append(cand)
                 changed = True
+    return cluster
 
+
+def _finalize_session_cluster(
+    cluster: list[MediaInfo],
+    *,
+    duration_tol_sec: float,
+) -> list[MediaInfo]:
     durations = sorted(f.duration_sec for f in cluster)
     median = durations[len(durations) // 2]
     filtered = [f for f in cluster if abs(f.duration_sec - median) <= duration_tol_sec]
@@ -196,16 +192,91 @@ def cluster_session_files(
             "Session cluster found by mtime but no files share duration within "
             f"{duration_tol_sec}s of median {median:.3f}s."
         )
-
-    # Prefer keeping the densest duration group if filtering emptied videos or audios.
     videos = [f for f in filtered if f.kind == "video"]
     audios = [f for f in filtered if f.kind == "audio"]
     if not videos or not audios:
         raise RuntimeError(
-            "Most recent mtime cluster did not contain both MultiCorder videos and "
-            f"audio WAVs after duration filter (videos={len(videos)}, audios={len(audios)})."
+            "Session cluster did not contain both MultiCorder videos and audio WAVs "
+            f"after duration filter (videos={len(videos)}, audios={len(audios)})."
         )
     return sorted(filtered, key=lambda f: (f.kind, f.name.lower()))
+
+
+def discover_all_clusters(
+    files: list[MediaInfo],
+    *,
+    mtime_tol_sec: float = 60.0,
+    duration_tol_sec: float = 2.0,
+) -> list[list[MediaInfo]]:
+    """Return all disjoint session clusters, newest first."""
+    remaining = list(files)
+    clusters: list[list[MediaInfo]] = []
+    while remaining:
+        by_mtime = sorted(remaining, key=lambda f: f.mtime, reverse=True)
+        seed = by_mtime[0]
+        try:
+            grown = _grow_cluster_from_seed(seed, remaining, mtime_tol_sec=mtime_tol_sec)
+            cluster = _finalize_session_cluster(
+                grown,
+                duration_tol_sec=duration_tol_sec,
+            )
+        except RuntimeError:
+            remaining = [f for f in remaining if f.path != seed.path]
+            continue
+        clusters.append(cluster)
+        cluster_paths = {f.path for f in cluster}
+        remaining = [f for f in remaining if f.path not in cluster_paths]
+    clusters.sort(key=lambda c: max(f.mtime for f in c), reverse=True)
+    return clusters
+
+
+def cluster_session_files(
+    files: list[MediaInfo],
+    *,
+    mtime_tol_sec: float = 60.0,
+    duration_tol_sec: float = 2.0,
+) -> list[MediaInfo]:
+    """Return the most recent session cluster."""
+    if not files:
+        raise FileNotFoundError("No MultiCorder video/audio files found.")
+    clusters = discover_all_clusters(
+        files,
+        mtime_tol_sec=mtime_tol_sec,
+        duration_tol_sec=duration_tol_sec,
+    )
+    if not clusters:
+        raise FileNotFoundError("No MultiCorder video/audio session cluster found.")
+    return clusters[0]
+
+
+def _cluster_to_summary(cluster: list[MediaInfo]) -> dict:
+    videos = [f for f in cluster if f.kind == "video"]
+    audios = [f for f in cluster if f.kind == "audio"]
+    durations = [f.duration_sec for f in cluster]
+    median_duration = sorted(durations)[len(durations) // 2]
+    newest = sorted(cluster, key=lambda f: f.mtime)[-1]
+    return {
+        "file_count": len(cluster),
+        "video_count": len(videos),
+        "audio_count": len(audios),
+        "typical_duration_sec": median_duration,
+        "typical_duration_human": format_duration(median_duration),
+        "typical_mtime_iso": newest.mtime_iso,
+    }
+
+
+def _files_to_payload(cluster: list[MediaInfo]) -> list[dict]:
+    return [
+        {
+            "path": f.path,
+            "name": f.name,
+            "kind": f.kind,
+            "mtime_iso": f.mtime_iso,
+            "duration_sec": f.duration_sec,
+            "duration_human": format_duration(f.duration_sec),
+        }
+        for f in cluster
+    ]
 
 
 MIN_PIAB_VIDEOS = 3
@@ -221,7 +292,7 @@ def resolve_scan_dir(*, root: Path, working: Path) -> Path:
     """
     root = root.resolve()
     working = working.resolve()
-    if list_top_level_multicorder(working):
+    if working.is_dir() and list_top_level_multicorder(working):
         return working
     if list_top_level_multicorder(root):
         return root
@@ -272,6 +343,7 @@ def assess_session_requirements(
     cluster: list[MediaInfo],
     *,
     scan_dir: Path,
+    classified_files: list[MediaInfo] | None = None,
     skipped: list[dict] | None = None,
 ) -> dict:
     """Return requirement status and human-readable gaps for PIAB labeling."""
@@ -289,6 +361,13 @@ def assess_session_requirements(
             f"(found {len(audios)})."
         )
 
+    cluster_paths = {f.path for f in cluster}
+    other_session: list[str] = []
+    if classified_files:
+        for item in classified_files:
+            if item.path not in cluster_paths:
+                other_session.append(item.name)
+
     unrecognized: list[str] = []
     for path in sorted(scan_dir.iterdir(), key=lambda p: p.name.lower()):
         if not path.is_file():
@@ -305,6 +384,7 @@ def assess_session_requirements(
             f"Skipped unreadable MultiCorder file: {item['name']} ({item['reason']})"
             for item in (skipped or [])
         ],
+        "other_session_files": sorted(other_session, key=str.lower),
         "unrecognized_media": unrecognized,
     }
 
@@ -315,6 +395,7 @@ def collect_session_scan(
     mtime_tol_sec: float = 60.0,
     duration_tol_sec: float = 2.0,
     date_filter: date | None = None,
+    cluster_index: int = 0,
 ) -> dict:
     """Scan ``scan_dir`` and return the JSON payload used by PIAB scan/init."""
     scan_dir = scan_dir.resolve()
@@ -326,19 +407,41 @@ def collect_session_scan(
             for item in files
             if date.fromisoformat(item.mtime_iso[:10]) == date_filter
         ]
-    cluster = cluster_session_files(
+    clusters = discover_all_clusters(
         files,
         mtime_tol_sec=mtime_tol_sec,
         duration_tol_sec=duration_tol_sec,
     )
+    if not clusters:
+        raise FileNotFoundError("No MultiCorder video/audio session cluster found.")
+    if cluster_index < 0 or cluster_index >= len(clusters):
+        raise ValueError(
+            f"cluster_index {cluster_index} out of range (found {len(clusters)} clusters)."
+        )
+
+    cluster = clusters[cluster_index]
     videos = [f for f in cluster if f.kind == "video"]
     audios = [f for f in cluster if f.kind == "audio"]
     durations = [f.duration_sec for f in cluster]
     mtimes = [f.mtime for f in cluster]
-    requirements = assess_session_requirements(cluster, scan_dir=scan_dir, skipped=skipped)
+    requirements = assess_session_requirements(
+        cluster,
+        scan_dir=scan_dir,
+        classified_files=files,
+        skipped=skipped,
+    )
+    cluster_options = []
+    for index, candidate in enumerate(clusters):
+        summary = _cluster_to_summary(candidate)
+        summary["index"] = index
+        cluster_options.append(summary)
+
     return {
         "scan_root": str(scan_dir),
         "date_filter": date_filter.isoformat() if date_filter else None,
+        "cluster_index": cluster_index,
+        "cluster_count": len(clusters),
+        "clusters": cluster_options,
         "file_count": len(cluster),
         "video_count": len(videos),
         "audio_count": len(audios),
@@ -349,17 +452,7 @@ def collect_session_scan(
         "typical_mtime_iso": sorted(cluster, key=lambda f: f.mtime)[-1].mtime_iso,
         "skipped_unreadable": skipped,
         "requirements": requirements,
-        "files": [
-            {
-                "path": f.path,
-                "name": f.name,
-                "kind": f.kind,
-                "mtime_iso": f.mtime_iso,
-                "duration_sec": f.duration_sec,
-                "duration_human": format_duration(f.duration_sec),
-            }
-            for f in cluster
-        ],
+        "files": _files_to_payload(cluster),
     }
 
 
@@ -485,6 +578,44 @@ def mark_step(
 ) -> None:
     steps = state.setdefault("steps", {})
     steps[step_id] = step_state(steps, step_id, title=title, status=status, **extra)
+
+
+def mark_piab_sync_ab_steps(state: dict, *, ab_result: dict) -> None:
+    """Gate on A/B sync offset choice before general 1-min approval."""
+    mark_step(
+        state,
+        "10a_sync_offset_approval",
+        title="Sync offset A/B approval",
+        status="awaiting_user",
+        one_min_no_offset=ab_result["one_min_no_offset"],
+        one_min_forced_offset=ab_result["one_min_forced_offset"],
+    )
+    mark_step(
+        state,
+        "11_one_min_approval",
+        title="1-min test approval",
+        status="pending",
+        note="Complete sync offset choice (step 10a) first.",
+    )
+    state["resume_at"] = "10a_sync_offset_approval"
+
+
+def mark_piab_sync_choice_completed(state: dict) -> None:
+    mark_step(
+        state,
+        "10a_sync_offset_approval",
+        title="Sync offset A/B approval",
+        status="completed",
+        choice=state.get("sync_offset_choice"),
+    )
+    mark_step(
+        state,
+        "11_one_min_approval",
+        title="1-min test approval",
+        status="awaiting_user",
+        chosen_test=state.get("podcast_autocut_test_mp4"),
+    )
+    state["resume_at"] = "11_one_min_approval"
 
 
 def extract_midpoint_frame(video: Path, out_jpg: Path) -> Path:
@@ -618,24 +749,166 @@ def find_loud_clip_start(
     return start / rate
 
 
+def find_loud_clip_start_before(
+    path: Path,
+    max_start_sec: float,
+    *,
+    clip_sec: float = DEFAULT_PREVIEW_CLIP_SEC,
+    window_sec: float = 0.5,
+) -> float:
+    """Return start time (sec) of a loud clip window at or before ``max_start_sec``."""
+    audio, rate = _wav_mono_float(path)
+    n = len(audio)
+    clip_samples = int(clip_sec * rate)
+    if n < clip_samples:
+        return 0.0
+
+    max_start_idx = int(max_start_sec * rate)
+    max_start_idx = max(0, min(max_start_idx, n - clip_samples))
+    search = audio[: max_start_idx + clip_samples]
+    if len(search) <= clip_samples:
+        return 0.0
+
+    win = max(1, int(window_sec * rate))
+    best_local = 0
+    best_rms = -1.0
+    hop = win // 2 or 1
+    max_local = min(max_start_idx, len(search) - clip_samples)
+    for i in range(0, max(1, max_local + 1), hop):
+        seg = search[i : i + win]
+        if len(seg) < win // 2:
+            break
+        rms = float(np.sqrt(np.mean(np.square(seg))))
+        if rms > best_rms:
+            best_rms = rms
+            best_local = i
+    start = best_local
+    start = max(0, min(start, max_start_idx))
+    return start / rate
+
+
+def find_loud_clip_start_after(
+    path: Path,
+    min_start_sec: float,
+    *,
+    clip_sec: float = DEFAULT_PREVIEW_CLIP_SEC,
+    window_sec: float = 0.5,
+) -> float:
+    """Return start time (sec) of a loud clip window at or after ``min_start_sec``."""
+    audio, rate = _wav_mono_float(path)
+    n = len(audio)
+    clip_samples = int(clip_sec * rate)
+    if n < clip_samples:
+        return 0.0
+
+    start_idx = int(min_start_sec * rate)
+    start_idx = max(0, min(start_idx, n - clip_samples))
+    search = audio[start_idx:]
+    if len(search) <= clip_samples:
+        return start_idx / rate
+
+    win = max(1, int(window_sec * rate))
+    best_local = 0
+    best_rms = -1.0
+    hop = win // 2 or 1
+    max_local = len(search) - clip_samples
+    for i in range(0, max(1, max_local + 1), hop):
+        seg = search[i : i + win]
+        if len(seg) < win // 2:
+            break
+        rms = float(np.sqrt(np.mean(np.square(seg))))
+        if rms > best_rms:
+            best_rms = rms
+            best_local = i
+    start = start_idx + best_local
+    start = max(start_idx, min(start, n - clip_samples))
+    return start / rate
+
+
 def find_loud_clip_starts(
     path: Path,
     *,
     clip_sec: float = DEFAULT_PREVIEW_CLIP_SEC,
     section_fractions: tuple[float, ...] = DEFAULT_PREVIEW_SECTIONS,
     window_sec: float = 0.5,
+    min_separation_sec: float = MIN_PREVIEW_CLIP_SEPARATION_SEC,
 ) -> list[float]:
-    """Return one loud clip start time per section (e.g. early and late in the file)."""
-    starts: list[float] = []
-    for fraction in section_fractions:
-        starts.append(
-            find_loud_clip_start(
+    """Return loud clip start times, at least ``min_separation_sec`` apart when possible."""
+    if not section_fractions:
+        return []
+
+    duration = ffprobe_duration(path)
+    max_start = max(0.0, duration - clip_sec)
+
+    first = find_loud_clip_start(
+        path,
+        clip_sec=clip_sec,
+        after_fraction=section_fractions[0],
+        window_sec=window_sec,
+    )
+    first = max(0.0, min(first, max_start))
+    starts = [first]
+
+    for fraction in section_fractions[1:]:
+        target = find_loud_clip_start(
+            path,
+            clip_sec=clip_sec,
+            after_fraction=fraction,
+            window_sec=window_sec,
+        )
+        target = max(0.0, min(target, max_start))
+
+        if abs(target - first) >= min_separation_sec - 0.05:
+            starts.append(target)
+            continue
+
+        before_limit = first - min_separation_sec
+        after_min = first + min_separation_sec
+        candidates: list[float] = []
+
+        if before_limit >= 0.0:
+            before = find_loud_clip_start_before(
                 path,
+                before_limit,
                 clip_sec=clip_sec,
-                after_fraction=fraction,
                 window_sec=window_sec,
             )
-        )
+            before = max(0.0, min(before, max_start))
+            if abs(before - first) >= min_separation_sec - 0.05:
+                candidates.append(before)
+
+        if after_min <= max_start:
+            after = find_loud_clip_start_after(
+                path,
+                after_min,
+                clip_sec=clip_sec,
+                window_sec=window_sec,
+            )
+            after = max(0.0, min(after, max_start))
+            if abs(after - first) >= min_separation_sec - 0.05:
+                candidates.append(after)
+
+        if candidates:
+            after_candidates = [c for c in candidates if c > first]
+            before_candidates = [c for c in candidates if c < first]
+            if fraction > section_fractions[0]:
+                pool = after_candidates or before_candidates
+            else:
+                pool = before_candidates or after_candidates
+            nxt = min(pool, key=lambda c: abs(c - target))
+            starts.append(nxt)
+            continue
+
+        # File too short to place both clips with full separation: spread what we can.
+        if after_min <= max_start:
+            starts[0] = max(0.0, min(first, max_start - min_separation_sec))
+            starts.append(min(max_start, starts[0] + min_separation_sec))
+        elif before_limit >= 0.0:
+            starts.append(max(0.0, first - min_separation_sec))
+            starts[0] = min(first, starts[-1] + min_separation_sec)
+        else:
+            starts.append(target)
+
     return starts
 
 
@@ -723,7 +996,7 @@ def move_labeled_media(
     audio_labels: dict[str, str],
     allow_overwrite: bool = False,
 ) -> dict:
-    """Move labeled sources into Raw with standard names. Keys are source paths."""
+    """Copy labeled sources into Raw with standard names. Source files are never moved."""
     from harness_overwrite_guard import refuse_overwrite
 
     validate_video_labels(video_labels)
@@ -731,7 +1004,15 @@ def move_labeled_media(
     raw = Path(state["paths"]["raw"])
     raw.mkdir(parents=True, exist_ok=True)
     original_paths: dict[str, str] = {}
-    moved: dict[str, str] = {}
+    copied: dict[str, str] = {}
+
+    def _copy_labeled_source(src: Path, dest: Path) -> None:
+        if src.resolve() == dest.resolve():
+            return
+        refuse_overwrite(dest, allow_overwrite=allow_overwrite)
+        if dest.exists():
+            dest.unlink()
+        shutil.copy2(src, dest)
 
     for src_str, role in video_labels.items():
         if role == "do_not_use":
@@ -740,12 +1021,9 @@ def move_labeled_media(
         if not src.is_file():
             raise FileNotFoundError(f"Labeled video missing: {src}")
         dest = raw / role_to_video_name(role)
-        refuse_overwrite(dest, allow_overwrite=allow_overwrite)
-        if dest.exists():
-            dest.unlink()
-        shutil.move(str(src), str(dest))
-        original_paths[dest.name] = str(src)
-        moved[role] = str(dest)
+        _copy_labeled_source(src, dest)
+        original_paths[dest.name] = str(src.resolve())
+        copied[role] = str(dest.resolve())
 
     for src_str, role in audio_labels.items():
         if role == "do_not_use":
@@ -754,20 +1032,52 @@ def move_labeled_media(
         if not src.is_file():
             raise FileNotFoundError(f"Labeled audio missing: {src}")
         dest = raw / role_to_audio_name(role)
-        refuse_overwrite(dest, allow_overwrite=allow_overwrite)
-        if dest.exists():
-            dest.unlink()
-        shutil.move(str(src), str(dest))
-        original_paths[dest.name] = str(src)
-        moved[role + "_audio"] = str(dest)
+        _copy_labeled_source(src, dest)
+        original_paths[dest.name] = str(src.resolve())
+        copied[role + "_audio"] = str(dest.resolve())
 
     state["labels"] = {
         "videos": {Path(k).name: v for k, v in video_labels.items()},
         "audios": {Path(k).name: v for k, v in audio_labels.items()},
     }
     state["original_paths"] = original_paths
-    state["moved_raw"] = moved
+    state["copied_raw"] = copied
+    state["moved_raw"] = copied
     return state
+
+
+def restore_moved_sources(
+    state: dict,
+    working_folder: Path,
+    *,
+    allow_overwrite: bool = False,
+) -> list[str]:
+    """
+    Copy labeled Raw files back to their original source paths when missing.
+
+    Used to recover sources that were moved before copy-only labeling. Existing
+    Raw copies are kept so in-progress sessions can continue.
+    """
+    from harness_overwrite_guard import refuse_overwrite
+
+    original_paths = state.get("original_paths")
+    if not isinstance(original_paths, dict) or not original_paths:
+        return []
+
+    raw = Path(state["paths"]["raw"])
+    restored: list[str] = []
+    for dest_name, original_str in original_paths.items():
+        original = Path(original_str)
+        if original.is_file():
+            continue
+        raw_copy = raw / dest_name
+        if not raw_copy.is_file():
+            continue
+        original.parent.mkdir(parents=True, exist_ok=True)
+        refuse_overwrite(original, allow_overwrite=allow_overwrite)
+        shutil.copy2(raw_copy, original)
+        restored.append(f"{raw_copy} -> {original}")
+    return restored
 
 
 def swap_host_guest_files(raw_dir: Path, *, kind: str) -> list[str]:

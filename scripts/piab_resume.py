@@ -6,9 +6,14 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from harness_episode_lib import BEN_HOST_RE
+from harness_av_sync_lib import (
+    ONE_MIN_DEFAULT,
+    ONE_MIN_FORCED_OFFSET,
+    ONE_MIN_NO_OFFSET,
+    load_failed_sync_confidence_flag,
+)
+from harness_episode_lib import BEN_HOST_RE, pick_interview_videos
 from harness_notify_failure import FAILURE_JSON_NAME
-from harness_podcast_autocut_test import _pick_interview_videos
 
 PREP_STEP_ORDER: tuple[str, ...] = (
     "06_conversation_sync",
@@ -60,6 +65,8 @@ class PrepResumePlan:
     @property
     def message(self) -> str:
         if self.ready_for_approval:
+            if self.resume_at == "10a_sync_offset_approval":
+                return "Sync offset A/B tests ready; waiting on user choice."
             return "1 Min Test already exists; waiting on user approval."
         if self.skipped_steps:
             skipped = ", ".join(PREP_STEP_TITLES.get(s, s) for s in self.skipped_steps)
@@ -120,7 +127,7 @@ def rehydrate_main_prepped(state: dict) -> dict | None:
     if len(prepped_videos) < 3:
         return None
     try:
-        _pick_interview_videos([str(p) for p in prepped_videos])
+        pick_interview_videos([str(p) for p in prepped_videos])
     except FileNotFoundError:
         return None
 
@@ -182,14 +189,23 @@ def detect_prep_completion(state: dict) -> dict[str, bool]:
         if candidate.is_file():
             transcript_json = candidate
 
-    one_min = output_dir / "1 Min Test.mp4"
+    temp = Path(state["paths"]["temp"])
+    sync_flag = load_failed_sync_confidence_flag(temp)
+    ab_no_offset = output_dir / ONE_MIN_NO_OFFSET
+    ab_forced = output_dir / ONE_MIN_FORCED_OFFSET
+    one_min = output_dir / ONE_MIN_DEFAULT
+    one_min_complete = (
+        (ab_no_offset.is_file() and ab_forced.is_file())
+        if sync_flag
+        else one_min.is_file()
+    )
 
     return {
         "06_conversation_sync": combined is not None,
         "07_deroom_placeholder": clean is not None,
         "08_video_sync": main_prepped is not None,
         "09_transcribe": transcript_json is not None,
-        "10_one_min_test": one_min.is_file(),
+        "10_one_min_test": one_min_complete,
     }
 
 
@@ -238,12 +254,50 @@ def apply_rehydration(state: dict, completion: dict[str, bool]) -> dict:
             updated["main_transcript_json"] = state["main_transcript_json"]
 
     if completion["10_one_min_test"]:
-        out_mp4 = Path(state["paths"]["output"]) / "1 Min Test.mp4"
-        if out_mp4.is_file():
-            state["podcast_autocut_test_mp4"] = str(out_mp4.resolve())
-            updated["podcast_autocut_test_mp4"] = state["podcast_autocut_test_mp4"]
+        output_dir = Path(state["paths"]["output"])
+        temp = Path(state["paths"]["temp"])
+        sync_flag = load_failed_sync_confidence_flag(temp)
+        if sync_flag:
+            no_offset = output_dir / ONE_MIN_NO_OFFSET
+            forced = output_dir / ONE_MIN_FORCED_OFFSET
+            if no_offset.is_file():
+                state["podcast_autocut_test_mp4_no_offset"] = str(no_offset.resolve())
+                updated["podcast_autocut_test_mp4_no_offset"] = state[
+                    "podcast_autocut_test_mp4_no_offset"
+                ]
+            if forced.is_file():
+                state["podcast_autocut_test_mp4_forced_offset"] = str(forced.resolve())
+                updated["podcast_autocut_test_mp4_forced_offset"] = state[
+                    "podcast_autocut_test_mp4_forced_offset"
+                ]
+            choice = state.get("sync_offset_choice")
+            chosen = None
+            if choice == "forced_offset" and forced.is_file():
+                chosen = forced
+            elif choice == "start_aligned" and no_offset.is_file():
+                chosen = no_offset
+            if chosen is not None:
+                state["podcast_autocut_test_mp4"] = str(chosen.resolve())
+                updated["podcast_autocut_test_mp4"] = state["podcast_autocut_test_mp4"]
+        else:
+            out_mp4 = output_dir / ONE_MIN_DEFAULT
+            if out_mp4.is_file():
+                state["podcast_autocut_test_mp4"] = str(out_mp4.resolve())
+                updated["podcast_autocut_test_mp4"] = state["podcast_autocut_test_mp4"]
 
     return updated
+
+
+def _pending_sync_offset_choice(state: dict, temp: Path) -> bool:
+    if state.get("sync_offset_choice_pending"):
+        return True
+    if load_failed_sync_confidence_flag(temp) and not state.get("sync_offset_choice"):
+        return True
+    resume_at = state.get("resume_at")
+    if resume_at == "10a_sync_offset_approval":
+        return True
+    step = state.get("steps", {}).get("10a_sync_offset_approval", {})
+    return isinstance(step, dict) and step.get("status") == "awaiting_user"
 
 
 def _infer_start_from_failure(last_failure: dict | None) -> str | None:
@@ -275,12 +329,31 @@ def build_prep_resume_plan(
     last_failure = _read_last_failure(temp)
 
     if completion["10_one_min_test"] and not from_step:
+        if _pending_sync_offset_choice(state, temp):
+            return PrepResumePlan(
+                working_folder=working_folder,
+                start_step="10_one_min_test",
+                skipped_steps=list(PREP_STEP_ORDER),
+                completed_through="10_one_min_test",
+                resume_at="10a_sync_offset_approval",
+                last_failure=last_failure,
+                rehydrated=rehydrated,
+                ready_for_approval=True,
+            )
+        resume_at = state.get("resume_at")
+        if isinstance(resume_at, str) and resume_at in (
+            "10a_sync_offset_approval",
+            "11_one_min_approval",
+        ):
+            target = resume_at
+        else:
+            target = "11_one_min_approval"
         return PrepResumePlan(
             working_folder=working_folder,
             start_step="11_one_min_approval",
             skipped_steps=list(PREP_STEP_ORDER),
             completed_through="10_one_min_test",
-            resume_at="11_one_min_approval",
+            resume_at=target,
             last_failure=last_failure,
             rehydrated=rehydrated,
             ready_for_approval=True,

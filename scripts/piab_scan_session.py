@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan E:\\PodcastRoom (or --root) for the latest MultiCorder session cluster."""
+"""Scan E:\\PodcastRoom (or --root) for a MultiCorder session cluster."""
 
 from __future__ import annotations
 
@@ -18,7 +18,12 @@ from piab_lib import (
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Scan for latest MultiCorder session.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Scan for MultiCorder session clusters. "
+            "By default selects the newest cluster (index 0)."
+        )
+    )
     parser.add_argument(
         "--root",
         type=Path,
@@ -33,6 +38,12 @@ def main() -> int:
         help="Limit candidates to this local modified date (YYYY-MM-DD).",
     )
     parser.add_argument(
+        "--cluster-index",
+        type=int,
+        default=0,
+        help="Which session cluster to use when several exist (0=newest).",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Exit 1 when PIAB minimum file counts are not met.",
@@ -45,8 +56,9 @@ def main() -> int:
             mtime_tol_sec=args.mtime_tol_sec,
             duration_tol_sec=args.duration_tol_sec,
             date_filter=args.date,
+            cluster_index=args.cluster_index,
         )
-    except (FileNotFoundError, RuntimeError) as exc:
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 

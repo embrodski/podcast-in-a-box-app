@@ -31,3 +31,68 @@ python scripts/piab_start_session.py
 ```
 
 See `.cursor/skills/lighthaven-podcast-in-a-box/SKILL.md` for the full pipeline until app-specific docs replace it.
+
+**App design (GUI + controller):** [`docs/piab-app-architecture.md`](docs/piab-app-architecture.md)
+
+**Controller CLI (no GUI):**
+
+```powershell
+python -m app.cli preflight
+python -m app.cli sessions
+python -m app.cli resume --folder "E:\PodcastRoom\<name>"
+```
+
+**Desktop app (PySide6):**
+
+```powershell
+pip install -r requirements-app.txt
+python -m app.main
+```
+
+Or double-click `run_piab_app.bat`.
+
+## Syncing scripts from the fallback pipeline
+
+Shared PIAB logic lives in both repos. The **app** vendors copies under `scripts/`; the **fallback** repo (`automated-video-editing` @ `lighthaven-podcast-in-a-box`) is the usual source for new features.
+
+**Do not blindly overwrite app scripts.** Merge manually and run tests after each sync.
+
+### Copy as-is (new files only)
+
+- New shared modules with no app-specific fork (e.g. `harness_av_sync_lib.py`, new one-off `piab_*.py` helpers)
+
+### Merge manually (diff both sides)
+
+| File | Why |
+|------|-----|
+| `scripts/piab_lib.py` | App: multi-cluster scan (`cluster_index`), GUI session naming, copy-vs-move labeling. Fork: sync step markers, other prep tweaks. |
+| `scripts/piab_run_prep.py` | Prep flow + sync A/B; app uses PIAB step IDs (`10`/`11`/`10a`), not harness `15`/`18`. |
+| `scripts/piab_rerun_one_min.py` | Must expose `rerun_one_min_test()` for GUI speaker-swap fix. |
+| `scripts/piab_run_full_render.py` | Forced-offset full render when sync confidence failed. |
+| `scripts/piab_resume.py` | Resume routing including `10a_sync_offset_approval`. |
+
+### Never copy from fork → app
+
+| File | Reason |
+|------|--------|
+| `scripts/harness_episode_lib.py` | App state file is `podcast-in-a-box.json`; fork/CLI uses `cursor-podcast-in-a-box.json`. App also has ElevenLabs key fallback and prep `started_at` UI support. |
+
+### After every sync
+
+```powershell
+cd E:\PodcastRoom\Cursor\podcast-in-a-box-app\scripts
+python -m unittest test_piab_lib.DiscoverClustersTests test_piab_sync_offset -v
+cd ..
+python -m unittest tests.test_controller -v
+```
+
+Confirm `collect_session_scan` still accepts `cluster_index` and the GUI special-folder scan works.
+
+### State files (do not mix)
+
+| Repo | Session JSON |
+|------|----------------|
+| **This app** | `<folder>/podcast-in-a-box.json` |
+| **Fallback / Cursor agent** | `<folder>/cursor-podcast-in-a-box.json` |
+
+Both can exist in the same episode folder; the app treats the Cursor file as a conflict, not a resumable GUI session.

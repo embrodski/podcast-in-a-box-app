@@ -250,3 +250,62 @@ def deliver_piab_full_interview(
         print_fn(f"  Local file: {video_path}")
         print_fn(f"  Error: {error_summary}")
         return delivery
+
+
+def resolve_delivery_short_url(state: dict) -> str:
+    """Return the Frame.io share link from session state or Output delivery JSON."""
+    delivery = state.get("delivery") or {}
+    url = str((delivery.get("frameio") or {}).get("short_url") or "").strip()
+    if url:
+        return url
+
+    paths = state.get("paths") or {}
+    output_dir = Path(str(paths.get("output") or ""))
+    if output_dir.is_dir():
+        record_path = output_dir / FULL_INTERVIEW_DELIVERY_JSON
+        if record_path.is_file():
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            url = str(record.get("short_url") or "").strip()
+            if url:
+                return url
+
+    raise RuntimeError(
+        "No delivery link is available for this session. "
+        "Email delivery may not have completed successfully."
+    )
+
+
+def send_delivery_link_email(
+    state: dict,
+    *,
+    to_addr: str,
+    print_fn=print,
+) -> str:
+    """
+    Email an existing Frame.io share link without re-uploading the video.
+
+    Returns the normalized recipient address.
+    """
+    from harness_delivery_prompt import is_valid_email, normalize_email
+
+    recipient = normalize_email(to_addr)
+    if not is_valid_email(recipient):
+        raise ValueError(f"Invalid email address: {to_addr!r}")
+
+    short_url = resolve_delivery_short_url(state)
+    episode_name = str(state.get("name") or "Podcast Interview")
+    smtp_config = SmtpConfig.from_env()
+    send_delivery_success_email(
+        smtp_config,
+        to_addr=recipient,
+        episode_name=episode_name,
+        short_url=short_url,
+    )
+
+    delivery = state.setdefault("delivery", {})
+    extras = delivery.setdefault("additional_emails", [])
+    if recipient not in extras:
+        extras.append(recipient)
+
+    print_fn(f"Delivery link emailed to {recipient}.")
+    return recipient

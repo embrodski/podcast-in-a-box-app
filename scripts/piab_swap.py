@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Swap Host/Guest raw files in Raw, and/or toggle transcript speaker-id swap."""
+"""
+Swap Host/Guest raw files in Raw, and/or toggle transcript speaker-id swap.
+
+For "Host and Guest audio are swapped in the edit" (Raw labeled correctly), use
+``piab_fix_audio_speaker_swap.py`` instead — it only remaps speaker IDs and
+re-renders the 1-min test. Use ``--files audio`` only when Raw WAV files were
+physically mislabeled during mic labeling.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +26,11 @@ def main() -> int:
         "--files",
         choices=("video", "audio", "both", "none"),
         default="none",
-        help="Swap Host/Guest Raw Video and/or Audio filenames in Raw.",
+        help=(
+            "Swap Host/Guest Raw Video and/or Audio filenames in Raw. "
+            "Use only when those Raw source files were mislabeled during labeling. "
+            "If the edit sounds swapped but Raw is correct, use piab_fix_audio_speaker_swap.py."
+        ),
     )
     parser.add_argument(
         "--speaker-ids",
