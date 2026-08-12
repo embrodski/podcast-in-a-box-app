@@ -169,6 +169,7 @@ def _trim_av_reencode(
     audio_bitrate: str,
     downscale_1080p: bool,
     video_encoder: str,
+    loudnorm_measured: object | None = None,
 ) -> str:
     # Apply trim first; optionally downscale video to 1080p max width for faster
     # renders / smaller uploads (useful for YouTube workflows).
@@ -176,7 +177,12 @@ def _trim_av_reencode(
     if downscale_1080p:
         # Keep aspect ratio; never upscale. Height becomes even via -2.
         v_chain += ",scale=w='min(1920,iw)':h=-2:flags=lanczos"
-    fc = f"[0:v]{v_chain}[v];[0:a]atrim=start={trim_sec},asetpts=PTS-STARTPTS[a]"
+    a_chain = f"atrim=start={trim_sec},asetpts=PTS-STARTPTS"
+    if loudnorm_measured is not None:
+        from harness_loudnorm import build_loudnorm_pass2_filter
+
+        a_chain = f"{a_chain},{build_loudnorm_pass2_filter(loudnorm_measured)}"
+    fc = f"[0:v]{v_chain}[v];[0:a]{a_chain}[a]"
     cmd_prefix = [
         "ffmpeg",
         "-y",
@@ -489,6 +495,14 @@ def main() -> int:
         help="AAC bitrate when re-encoding (default: 192k).",
     )
     p.add_argument(
+        "--loudnorm",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Two-pass -14 LUFS on prepped audio (default: on with --prepped-names). "
+        "Re-encode path applies pass 2 during trim; stream-copy / no-trim copy "
+        "paths loudnorm in place after write.",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Print trims only; do not write videos.",
@@ -500,6 +514,9 @@ def main() -> int:
         help="Write trim metadata as JSON.",
     )
     args = p.parse_args()
+    loudnorm_enabled = (
+        bool(args.prepped_names) if args.loudnorm is None else bool(args.loudnorm)
+    )
 
     videos = [v.resolve() for v in args.videos]
     for v in videos:
@@ -545,6 +562,8 @@ def main() -> int:
         "anchor_file": str(videos[0]),
         "align_to": align_to,
         "prepped_names": bool(args.prepped_names),
+        "loudnorm": loudnorm_enabled,
+        "loudnorm_target_i_lufs": -14.0 if loudnorm_enabled else None,
         "reference_index": ref_idx,
         "reference_file": str(videos[ref_idx]),
         "reference_role": meta[ref_idx].get("reference_role", ""),
@@ -583,6 +602,16 @@ def main() -> int:
         out_path = (out_dir / out_basename).resolve()
         # Suffix must stay recognized by ffmpeg muxer (e.g. .mp4), not ".mp4.partial".
         tmp_path = out_path.with_name(f"{out_path.stem}.partial{out_path.suffix}")
+        loudnorm_measured = None
+        loudnorm_applied_during_encode = False
+
+        if loudnorm_enabled:
+            from harness_loudnorm import (
+                PREPPED_TARGET_I_LUFS,
+                measure_loudnorm,
+                measure_loudnorm_trimmed,
+                normalize_prepped_media_inplace,
+            )
 
         if trim_sec <= 0.0:
             if out_path == v:
@@ -605,16 +634,28 @@ def main() -> int:
                     ]
                 )
                 _replace_file_atomic(tmp_path, out_path)
+                if loudnorm_enabled:
+                    loudnorm_measured = normalize_prepped_media_inplace(out_path)
             finally:
                 tmp_path.unlink(missing_ok=True)
         elif args.stream_copy:
             try:
                 _trim_av_streamcopy(v, tmp_path, trim_sec=trim_sec)
                 _replace_file_atomic(tmp_path, out_path)
+                if loudnorm_enabled:
+                    loudnorm_measured = normalize_prepped_media_inplace(
+                        out_path,
+                    )
             finally:
                 tmp_path.unlink(missing_ok=True)
         else:
             try:
+                if loudnorm_enabled:
+                    loudnorm_measured = (
+                        measure_loudnorm_trimmed(v, trim_sec)
+                        if trim_sec > 0.0
+                        else measure_loudnorm(v)
+                    )
                 active_video_encoder = _trim_av_reencode(
                     v,
                     tmp_path,
@@ -623,11 +664,22 @@ def main() -> int:
                     audio_bitrate=args.audio_bitrate,
                     downscale_1080p=bool(args.downscale_1080p),
                     video_encoder=active_video_encoder,
+                    loudnorm_measured=loudnorm_measured,
                 )
+                loudnorm_applied_during_encode = loudnorm_enabled
                 meta[i]["video_encoder"] = active_video_encoder
                 _replace_file_atomic(tmp_path, out_path)
             finally:
                 tmp_path.unlink(missing_ok=True)
+        if loudnorm_enabled and loudnorm_measured is not None:
+            meta[i]["loudnorm_input_i_lufs"] = loudnorm_measured.input_i
+            meta[i]["loudnorm_applied_during_encode"] = loudnorm_applied_during_encode
+            print(
+                f"  Loudnorm {out_path.name}: input_i={loudnorm_measured.input_i:.1f} LUFS "
+                f"-> target {PREPPED_TARGET_I_LUFS:.1f} LUFS "
+                f"({'during encode' if loudnorm_applied_during_encode else 'post copy'})",
+                file=sys.stderr,
+            )
         print(f"Wrote {out_path}")
 
     report["video_encoder_final"] = active_video_encoder

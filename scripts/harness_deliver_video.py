@@ -15,7 +15,7 @@ from frameio_client import (
     FrameioConfig,
     FrameioDeliveryResult,
     sanitize_frameio_error,
-    upload_file_and_create_share,
+    upload_files_and_create_share,
 )
 from harness_email import (
     SmtpConfig,
@@ -23,6 +23,8 @@ from harness_email import (
     send_delivery_success_email,
 )
 from harness_episode_lib import utc_now_iso
+from harness_piab_transcript import write_human_transcript_to_output
+from podcast_flag_phrases import load_flag_report_text
 
 FULL_INTERVIEW_MP4 = "Full Interview.mp4"
 FULL_INTERVIEW_DELIVERY_JSON = "Full Interview.delivery.json"
@@ -43,7 +45,7 @@ def transcript_source_path(state: dict) -> Path | None:
     return path if path.is_file() else None
 
 
-def copy_transcript_to_output(state: dict, output_dir: Path) -> Path | None:
+def copy_transcript_json_to_output(state: dict, output_dir: Path) -> Path | None:
     source = transcript_source_path(state)
     if source is None:
         return None
@@ -53,18 +55,41 @@ def copy_transcript_to_output(state: dict, output_dir: Path) -> Path | None:
     return dest
 
 
+def write_piab_output_transcripts(state: dict, output_dir: Path) -> dict[str, str | None]:
+    """
+    Write human-readable and detail JSON transcripts under Output.
+
+    Returns paths for session state / delivery records.
+    """
+    json_path = copy_transcript_json_to_output(state, output_dir)
+    human_path = write_human_transcript_to_output(state, output_dir)
+    return {
+        "human_transcript_txt": str(human_path.resolve()),
+        "main_transcript_json_output": str(json_path.resolve()) if json_path else None,
+    }
+
+
 def build_output_delivery_record(
     *,
     recipient_email: str,
     local_video_path: Path,
-    transcript_path: Path | None,
+    transcript_json_path: Path | None,
+    human_transcript_path: Path | None,
     frameio: FrameioDeliveryResult,
 ) -> dict[str, Any]:
+    uploads = frameio.uploads
+    transcript_upload = uploads[1] if len(uploads) > 1 else None
     return {
         "recipient_email": recipient_email,
         "local_video_path": str(local_video_path.resolve()),
-        "transcript_path": str(transcript_path.resolve()) if transcript_path else None,
+        "transcript_json_path": (
+            str(transcript_json_path.resolve()) if transcript_json_path else None
+        ),
+        "human_transcript_path": (
+            str(human_transcript_path.resolve()) if human_transcript_path else None
+        ),
         "file_id": frameio.upload.file_id,
+        "transcript_file_id": transcript_upload.file_id if transcript_upload else None,
         "share_id": frameio.share.share_id,
         "short_url": frameio.share.short_url,
         "completed_at": utc_now_iso(),
@@ -136,12 +161,27 @@ def deliver_piab_full_interview(
     temp_dir = Path(state["paths"]["temp"])
     video_path = video_path.resolve()
 
-    transcript_path = copy_transcript_to_output(state, output_dir)
+    transcript_json_path = (
+        Path(str(state["main_transcript_json_output"]))
+        if state.get("main_transcript_json_output")
+        else None
+    )
+    human_transcript_path = (
+        Path(str(state["human_transcript_txt"]))
+        if state.get("human_transcript_txt")
+        else None
+    )
+
     summary: dict[str, Any] = {
         "episode_name": episode_name,
         "recipient_email": recipient,
         "local_video_path": str(video_path),
-        "transcript_path": str(transcript_path) if transcript_path else None,
+        "transcript_json_path": (
+            str(transcript_json_path) if transcript_json_path else None
+        ),
+        "human_transcript_path": (
+            str(human_transcript_path) if human_transcript_path else None
+        ),
         "dry_run": dry_run,
     }
 
@@ -159,18 +199,24 @@ def deliver_piab_full_interview(
             )
             return delivery
 
+        upload_paths = [video_path]
+        if human_transcript_path is not None and human_transcript_path.is_file():
+            upload_paths.append(human_transcript_path)
+
         print_fn(
-            f"Uploading {video_path.name} to Frame.io for delivery to {recipient}..."
+            f"Uploading {len(upload_paths)} file(s) to Frame.io "
+            f"for delivery to {recipient}..."
         )
-        frameio_result = upload_file_and_create_share(
+        frameio_result = upload_files_and_create_share(
             frameio_config,
-            file_path=video_path,
+            file_paths=upload_paths,
             share_name=f"{episode_name} — Full Interview",
         )
         record = build_output_delivery_record(
             recipient_email=recipient,
             local_video_path=video_path,
-            transcript_path=transcript_path,
+            transcript_json_path=transcript_json_path,
+            human_transcript_path=human_transcript_path,
             frameio=frameio_result,
         )
         output_record_path = write_output_delivery_json(output_dir, record)
@@ -200,6 +246,10 @@ def deliver_piab_full_interview(
             to_addr=recipient,
             episode_name=episode_name,
             short_url=frameio_result.share.short_url,
+            flag_report=load_flag_report_text(
+                state,
+                working_folder=_session_folder_from_state(state),
+            ),
         )
         delivery["email_delivery"].update(
             {
@@ -217,8 +267,10 @@ def deliver_piab_full_interview(
         print_fn(f"  Share ID:  {frameio_result.share.share_id}")
         print_fn(f"  Link:      {frameio_result.share.short_url}")
         print_fn(f"  Saved:     {output_record_path}")
-        if transcript_path is not None:
-            print_fn(f"  Transcript: {transcript_path}")
+        if human_transcript_path is not None:
+            print_fn(f"  Transcript: {human_transcript_path}")
+        elif transcript_json_path is not None:
+            print_fn(f"  Transcript JSON: {transcript_json_path}")
         return delivery
     except Exception as exc:
         error_summary = sanitize_frameio_error(str(exc))
@@ -250,6 +302,17 @@ def deliver_piab_full_interview(
         print_fn(f"  Local file: {video_path}")
         print_fn(f"  Error: {error_summary}")
         return delivery
+
+
+def _session_folder_from_state(state: dict) -> Path | None:
+    paths = state.get("paths")
+    if not isinstance(paths, dict):
+        return None
+    for key in ("output", "temp"):
+        raw = paths.get(key)
+        if raw:
+            return Path(str(raw)).parent
+    return None
 
 
 def resolve_delivery_short_url(state: dict) -> str:
@@ -300,6 +363,10 @@ def send_delivery_link_email(
         to_addr=recipient,
         episode_name=episode_name,
         short_url=short_url,
+        flag_report=load_flag_report_text(
+            state,
+            working_folder=_session_folder_from_state(state),
+        ),
     )
 
     delivery = state.setdefault("delivery", {})

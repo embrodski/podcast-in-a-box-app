@@ -222,14 +222,12 @@ class OneMinReviewScreen(ScreenWidget):
         layout.setSpacing(10)
 
         layout.addWidget(heading_label("Review 1-minute preview"))
-        layout.addWidget(
-            body_label(
-                "Watch the short autocut preview. If Host and Guest look correct, "
-                "continue. If audio or cameras sound swapped in the edit (Raw files "
-                "labeled correctly), use Host/Guest swapped in edit. If the wrong "
-                "camera or mic files were labeled in Raw, choose Wrong Host/Guest files."
-            )
+        self._intro = body_label(
+            "Watch the short autocut preview. If Host and Guest look correct, "
+            "continue. If Host and Guest sound or look swapped, use "
+            "Host/Guest swapped to fix speaker mapping (Raw files stay unchanged)."
         )
+        layout.addWidget(self._intro)
 
         self._status = body_label("")
         layout.addWidget(self._status)
@@ -250,15 +248,15 @@ class OneMinReviewScreen(ScreenWidget):
         good.clicked.connect(self._looks_good)
         actions_layout.addWidget(good)
 
-        swapped = QPushButton("Host/Guest swapped in edit (fix speaker mapping)")
+        swapped = QPushButton("Host/Guest swapped (fix speaker mapping)")
         swapped.setMinimumHeight(40)
         swapped.clicked.connect(self._host_guest_swapped_in_edit)
         actions_layout.addWidget(swapped)
 
-        wrong = QPushButton("Wrong Host/Guest files (re-label cameras or mics)")
-        wrong.setMinimumHeight(40)
-        wrong.clicked.connect(self._wrong_files)
-        actions_layout.addWidget(wrong)
+        relabel = QPushButton("Re-label cameras/mics…")
+        relabel.setMinimumHeight(40)
+        relabel.clicked.connect(self._relabel_cameras_mics)
+        actions_layout.addWidget(relabel)
 
         layout.addWidget(self._actions)
 
@@ -293,11 +291,24 @@ class OneMinReviewScreen(ScreenWidget):
         folder = _session_folder(self)
         if folder is None:
             return
+
+        def _on_ok(state: dict) -> None:
+            if state.get("resume_at") == "13_full_prep_after_preview":
+                QMessageBox.information(
+                    self,
+                    "Starting full processing",
+                    "Starting full processing on the complete interview. "
+                    "This will take a while.",
+                )
+                self.navigate.emit("E1")
+                return
+            self.navigate.emit("F3")
+
         self._run_worker(
             "Saving approval…",
             self.controller.approve_one_min_test,
             folder,
-            on_ok=lambda _state: self.navigate.emit("F3"),
+            on_ok=_on_ok,
         )
 
     def _host_guest_swapped_in_edit(self) -> None:
@@ -340,55 +351,34 @@ class OneMinReviewScreen(ScreenWidget):
             on_ok=_on_fix_ok,
         )
 
-    def _wrong_files(self) -> None:
+    def _relabel_cameras_mics(self) -> None:
         folder = _session_folder(self)
         if folder is None:
             return
-
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Question)
-        box.setWindowTitle("Swap labeled files")
-        box.setText("Which Host/Guest files should be swapped in Raw?")
-        box.setInformativeText(
-            "Use this only when the wrong camera or mic files were labeled during "
-            "labeling (Raw sources physically mislabeled). Swapping Raw files clears "
-            "prep outputs and requires processing again. If the edit sounds swapped "
-            "but Raw is correct, use Host/Guest swapped in edit instead."
-        )
-        btn_video = box.addButton("Video only", QMessageBox.AcceptRole)
-        btn_audio = box.addButton("Audio only", QMessageBox.AcceptRole)
-        btn_both = box.addButton("Video and audio", QMessageBox.AcceptRole)
-        box.addButton(QMessageBox.Cancel)
-        box.exec()
-
-        clicked = box.clickedButton()
-        if clicked is None or clicked == box.button(QMessageBox.Cancel):
-            return
-        if clicked == btn_video:
-            kind = "video"
-        elif clicked == btn_audio:
-            kind = "audio"
-        else:
-            kind = "both"
-
         if not confirm_action(
             self,
-            title="Re-label required",
-            text="Swapping Raw files clears synced outputs and transcript.",
-            detail="Continue to camera labeling and run prep again afterward?",
+            title="Re-label cameras and mics?",
+            text=(
+                "Re-labeling sends you back to camera labeling and clears preview work. "
+                "This takes a long time."
+            ),
+            detail=(
+                "Use Host/Guest swapped if only speaker mapping is wrong in the edit. "
+                "Continue to re-label?"
+            ),
         ):
             return
 
-        def _swap_and_clear() -> None:
-            self.controller.swap_labeled_files(folder, kind=kind)
+        def _clear() -> None:
+            self.controller.clear_preview_for_relabel(folder)
 
         self._run_worker(
-            "Swapping labeled files…",
-            _swap_and_clear,
-            on_ok=lambda _r: self._after_file_swap(),
+            "Preparing to re-label…",
+            _clear,
+            on_ok=lambda _r: self._after_relabel(),
         )
 
-    def _after_file_swap(self) -> None:
+    def _after_relabel(self) -> None:
         ctx = self.context()
         if ctx is not None:
             ctx.video_labels = None
@@ -522,6 +512,7 @@ class FullRenderScreen(ScreenWidget):
         super().__init__(controller, parent)
         self._render_job_id: str | None = None
         self._starting = False
+        self._local_step: str | None = None
         self._local_started: datetime | None = None
 
         layout = QVBoxLayout(self)
@@ -586,6 +577,7 @@ class FullRenderScreen(ScreenWidget):
         self._abort.show()
         self._render_job_id = None
         self._starting = False
+        self._local_step = None
         self._local_started = None
 
         try:
@@ -761,6 +753,13 @@ class FullRenderScreen(ScreenWidget):
             folder,
             fallback_started_at=self._local_started,
         )
+        if progress.current_step and progress.current_step != self._local_step:
+            self._local_step = progress.current_step
+            self._local_started = datetime.now().astimezone()
+            progress = self.controller.read_render_progress(
+                folder,
+                fallback_started_at=self._local_started,
+            )
 
         self._current.setText(progress.current_label)
         self._steps.setText("\n".join(progress.step_lines))

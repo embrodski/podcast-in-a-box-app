@@ -15,12 +15,25 @@ PREP_STEP_ORDER: tuple[str, ...] = (
     "10_one_min_test",
 )
 
+FAST_PREVIEW_STEP_ORDER: tuple[str, ...] = (
+    "06p_conversation_sync",
+    "07p_deroom_placeholder",
+    "08p_video_sync",
+    "09p_transcribe",
+    "10p_fast_preview_one_min",
+)
+
 PREP_STEP_LABELS: dict[str, str] = {
     "06_conversation_sync": "Syncing audio",
     "07_deroom_placeholder": "Preparing clean audio",
     "08_video_sync": "Syncing video",
     "09_transcribe": "Transcribing (ElevenLabs)",
     "10_one_min_test": "Rendering 1-minute preview",
+    "06p_conversation_sync": "Syncing audio",
+    "07p_deroom_placeholder": "Preparing clean audio",
+    "08p_video_sync": "Syncing video",
+    "09p_transcribe": "Transcribing (ElevenLabs)",
+    "10p_fast_preview_one_min": "Rendering 1-minute preview",
 }
 
 PREP_STEP_ESTIMATE_KEYS: dict[str, str | None] = {
@@ -29,6 +42,11 @@ PREP_STEP_ESTIMATE_KEYS: dict[str, str | None] = {
     "08_video_sync": "video_sync_sec",
     "09_transcribe": "transcribe_sec",
     "10_one_min_test": "one_min_render_sec",
+    "06p_conversation_sync": "conversation_sync_sec",
+    "07p_deroom_placeholder": None,
+    "08p_video_sync": "video_sync_sec",
+    "09p_transcribe": "transcribe_sec",
+    "10p_fast_preview_one_min": "one_min_render_sec",
 }
 
 DEROOM_PLACEHOLDER_EST_SEC = 30
@@ -109,36 +127,94 @@ class PrepProgress:
         }
 
 
+def _failure_candidates(working_folder: Path) -> list[Path]:
+    return [
+        working_folder / "Temp" / FAILURE_JSON_NAME,
+        working_folder / "Preview Files" / "Temp" / FAILURE_JSON_NAME,
+    ]
+
+
 def read_prep_failure(working_folder: Path) -> dict | None:
-    path = working_folder / "Temp" / FAILURE_JSON_NAME
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+    newest: tuple[float, dict] | None = None
+    for path in _failure_candidates(working_folder):
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            mtime = path.stat().st_mtime
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and (newest is None or mtime >= newest[0]):
+            newest = (mtime, data)
+    return newest[1] if newest else None
 
 
 def clear_prep_failure(working_folder: Path) -> None:
     """Remove stale failure markers so a retry can start prep."""
-    temp = working_folder / "Temp"
-    for name in (FAILURE_JSON_NAME, "harness-FAILURE.txt"):
-        path = temp / name
-        if path.is_file():
-            path.unlink()
+    for temp in (working_folder / "Temp", working_folder / "Preview Files" / "Temp"):
+        for name in (FAILURE_JSON_NAME, "harness-FAILURE.txt"):
+            path = temp / name
+            if path.is_file():
+                path.unlink()
+
+
+def is_fast_preview_progress(state: dict) -> bool:
+    """True while the UI should show Fast Preview prep step lines."""
+    resume_at = state.get("resume_at")
+    if isinstance(resume_at, str):
+        if resume_at in FAST_PREVIEW_STEP_ORDER:
+            return True
+        if resume_at in PREP_STEP_ORDER:
+            return False
+        if resume_at in (
+            "12_estimate_full",
+            "13_full_prep_after_preview",
+            "13_full_render",
+            "14_done",
+        ):
+            return False
+
+    steps = state.get("steps") if isinstance(state.get("steps"), dict) else {}
+    if not isinstance(steps, dict):
+        steps = {}
+
+    for step_id in FAST_PREVIEW_STEP_ORDER:
+        entry = steps.get(step_id)
+        if isinstance(entry, dict) and entry.get("status") == "in_progress":
+            return True
+
+    full_started = any(
+        isinstance(steps.get(step_id), dict)
+        and steps[step_id].get("status") in {"completed", "in_progress"}
+        for step_id in PREP_STEP_ORDER
+    )
+    if full_started:
+        return False
+
+    ten_p = steps.get("10p_fast_preview_one_min")
+    ten_p_done = isinstance(ten_p, dict) and ten_p.get("status") == "completed"
+    if ten_p_done:
+        return False
+
+    return any(
+        isinstance(steps.get(step_id), dict)
+        and steps[step_id].get("status") in {"completed", "in_progress", "awaiting_user"}
+        for step_id in FAST_PREVIEW_STEP_ORDER
+    )
 
 
 def prep_needs_resume(state: dict, working_folder: Path) -> bool:
     resume_at = state.get("resume_at")
     if isinstance(resume_at, str) and resume_at in PREP_STEP_ORDER:
         return True
+    if isinstance(resume_at, str) and resume_at in FAST_PREVIEW_STEP_ORDER:
+        return True
     if read_prep_failure(working_folder) is not None:
         return True
     steps = state.get("steps") or {}
     if not isinstance(steps, dict):
         return False
-    for step_id in PREP_STEP_ORDER:
+    for step_id in (*PREP_STEP_ORDER, *FAST_PREVIEW_STEP_ORDER):
         entry = steps.get(step_id)
         if isinstance(entry, dict) and entry.get("status") == "completed":
             return True
@@ -172,17 +248,25 @@ def _format_remaining(seconds: float) -> str:
     return f"about {hours} hr remaining"
 
 
+def _estimate_breakdown(state: dict, *, fast: bool) -> dict | None:
+    key = "estimate_prep_fast" if fast else "estimate_prep"
+    estimate = state.get(key)
+    if not isinstance(estimate, dict) and fast:
+        estimate = state.get("estimate_prep")
+    if not isinstance(estimate, dict):
+        return None
+    breakdown = estimate.get("breakdown")
+    return breakdown if isinstance(breakdown, dict) else None
+
+
 def _step_estimate_sec(state: dict, step_id: str) -> int | None:
-    if step_id == "07_deroom_placeholder":
+    if step_id in {"07_deroom_placeholder", "07p_deroom_placeholder"}:
         return DEROOM_PLACEHOLDER_EST_SEC
     key = PREP_STEP_ESTIMATE_KEYS.get(step_id)
     if not key:
         return None
-    estimate = state.get("estimate_prep")
-    if not isinstance(estimate, dict):
-        return None
-    breakdown = estimate.get("breakdown")
-    if not isinstance(breakdown, dict):
+    breakdown = _estimate_breakdown(state, fast=step_id in FAST_PREVIEW_STEP_ORDER)
+    if breakdown is None:
         return None
     value = breakdown.get(key)
     if isinstance(value, (int, float)):
@@ -222,7 +306,7 @@ def _step_timing_display(
     now: datetime | None = None,
     fallback_started_at: datetime | None = None,
 ) -> tuple[str | None, str | None]:
-    if step_id is None or step_id not in PREP_STEP_ORDER:
+    if step_id is None or step_id not in PREP_STEP_LABELS:
         return None, None
 
     started = _step_started_at(state, step_id, fallback_started_at=fallback_started_at)
@@ -242,6 +326,10 @@ def _step_timing_display(
     return started_display, f"Est. {_format_remaining(remaining)} for this step"
 
 
+def _step_done(status: str | None) -> bool:
+    return status in {"completed", "skipped"}
+
+
 def read_prep_progress(
     state: dict,
     working_folder: Path,
@@ -255,15 +343,60 @@ def read_prep_progress(
 
     failure = read_prep_failure(working_folder)
     steps = state.get("steps") if isinstance(state.get("steps"), dict) else {}
+    fast = is_fast_preview_progress(state)
+    step_order = FAST_PREVIEW_STEP_ORDER if fast else PREP_STEP_ORDER
+
+    # Chained full-after-preview / full render — use render progress (optionally with prep prefix).
+    if resume_at in ("13_full_render", "14_done") or resume_at in (
+        "13_output_transcripts",
+        "13_delivery",
+    ):
+        from app.controller.render_progress import read_render_progress
+
+        include_prep = bool(
+            (state.get("fast_preview_approval") or {}).get("approved_at")
+        ) or any(
+            isinstance(steps.get(step_id), dict)
+            and steps[step_id].get("status") == "skipped"
+            for step_id in ("10_one_min_test",)
+        )
+        render = read_render_progress(
+            state,
+            working_folder,
+            now=now,
+            fallback_started_at=fallback_started_at,
+            include_prep_prefix=include_prep,
+        )
+        return PrepProgress(
+            resume_at=resume_at,
+            current_step=render.current_step,
+            current_label=render.current_label,
+            step_started_display=render.step_started_display,
+            step_eta_display=render.step_eta_display,
+            step_lines=render.step_lines,
+            prep_complete=render.render_complete,
+            failure=render.failure or failure,
+        )
 
     if resume_at in ("11_one_min_approval", "10a_sync_offset_approval"):
+        from app.controller.fast_preview import fast_preview_review_pending
+
+        is_fast = fast_preview_review_pending(state)
         lines = [
             f"✓ {PREP_STEP_LABELS[step_id]}"
-            for step_id in PREP_STEP_ORDER
+            for step_id in step_order
         ]
+        if is_fast:
+            lines = [
+                "✓ Fast Preview source clips",
+                "✓ Fast Preview sync & transcribe",
+                "✓ Fast Preview 1-minute test",
+            ]
         label = "Prep complete"
         if resume_at == "10a_sync_offset_approval":
             label = "Sync check — pick which preview sounds better"
+        elif is_fast:
+            label = "Fast Preview ready for review"
         return PrepProgress(
             resume_at=resume_at,
             current_step=None,
@@ -274,28 +407,34 @@ def read_prep_progress(
         )
 
     current_step: str | None = None
-    if isinstance(resume_at, str) and resume_at in PREP_STEP_ORDER:
-        current_step = resume_at
-    else:
-        for step_id in PREP_STEP_ORDER:
+    if isinstance(resume_at, str) and resume_at in step_order:
+        entry = steps.get(resume_at) if isinstance(steps, dict) else None
+        status = entry.get("status") if isinstance(entry, dict) else None
+        if not _step_done(status):
+            current_step = resume_at
+    if current_step is None:
+        for step_id in step_order:
             entry = steps.get(step_id) if isinstance(steps, dict) else None
             status = entry.get("status") if isinstance(entry, dict) else None
-            if status != "completed":
+            if not _step_done(status):
                 current_step = step_id
                 break
 
     if current_step is None and failure:
         failed_step = failure.get("step_id")
-        if isinstance(failed_step, str) and failed_step in PREP_STEP_ORDER:
+        if isinstance(failed_step, str) and failed_step in step_order:
             current_step = failed_step
 
     lines: list[str] = []
-    for step_id in PREP_STEP_ORDER:
+    for step_id in step_order:
         label = PREP_STEP_LABELS[step_id]
         entry = steps.get(step_id) if isinstance(steps, dict) else None
         status = entry.get("status") if isinstance(entry, dict) else None
-        if status == "completed":
-            lines.append(f"✓ {label}")
+        if _step_done(status):
+            if step_id in {"10_one_min_test", "10p_fast_preview_one_min"} and status == "skipped":
+                lines.append("✓ 1-minute preview (from Fast Preview)")
+            else:
+                lines.append(f"✓ {label}")
         elif step_id == current_step:
             lines.append(f"→ {label}")
         else:

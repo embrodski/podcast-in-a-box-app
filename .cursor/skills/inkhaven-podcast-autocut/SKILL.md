@@ -87,7 +87,7 @@ These apply when generating **`interview.dsl`** (before rendering):
 
 - **First five seconds:** the timeline interval **[0s, 5s)** stays on **`speaker_0` (Ben)**. Every transcript row whose time range **overlaps** `[0, 5)` is forced to Ben, so there is **no cut off Ben** during that window (sentence-row aligned; a long row that crosses 5s is one clip, so Ben may extend past 5s for that row).
 - **Last four seconds:** the timeline from **`T − 4s` through `T`** stays on **`speaker_0`**, where **`T`** is the end of the last transcript row plus the generator’s **final-shot tail** (same `--final-shot-tail-sec` as `generate_full_dsl.py`, default 2s). Every transcript row that **overlaps** that tail window is forced to Ben. If there is no row boundary exactly at `T − 4s`, the first row that intersects the tail window is forced to Ben for its whole clip (Ben may start slightly before `T − 4s`).
-- **CLI:** `--open-ben-sec` and `--tail-ben-sec` default to **5** and **4**; set to **0** to disable either lock.
+- **CLI:** `--open-ben-sec` and `--tail-ben-sec` default to **3** and **4**; set to **0** to disable either lock.
 
 Forced-wide spans from the dense-cut rule are **trimmed** so **`!camera wide`** never covers the open-Ben or tail-Ben windows.
 

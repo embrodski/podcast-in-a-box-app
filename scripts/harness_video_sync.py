@@ -1,4 +1,9 @@
-"""Video-sync orchestration for inkhaven-episode-harness (video-sync skill rules)."""
+"""Video-sync orchestration for inkhaven-episode-harness (video-sync skill rules).
+
+Multicam prep applies two-pass -14 LUFS during re-encode when there are 2+ cameras
+(see docs/loudness-normalization.md). Single-camera prep loudnorms after copy.
+Anchor *-prepped.wav is extracted from the normalized anchor prepped MP4.
+"""
 
 from __future__ import annotations
 
@@ -209,6 +214,10 @@ def run_video_sync(
             prepped_paths.append(dest)
         anchor_prepped = prepped_paths[0]
 
+        from harness_loudnorm import normalize_prepped_outputs
+
+        normalize_prepped_outputs(prepped_paths)
+
     wav_out = dirs.input_dir / prepped_wav_basename(audio_file)
     run_cmd(
         [
@@ -226,4 +235,5 @@ def run_video_sync(
         "synced": [str(p) for p in synced_paths],
         "prepped_videos": [str(p) for p in prepped_paths],
         "prepped_audio_wav": str(anchor_wav),
+        "loudnorm_target_lufs": -14.0,
     }

@@ -43,6 +43,8 @@ def main() -> int:
             if key in (
                 "unpause_phrases",
                 "end_phrases",
+                "start_countdown_tokens",
+                "start_countdown_suffix_tokens",
                 "start_phrase_countdown_tokens",
                 "start_phrase_countdown_suffix",
             ):

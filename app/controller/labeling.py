@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from app.controller.paths import REPO_ROOT, SCRIPTS_DIR, ensure_scripts_path
@@ -49,17 +50,22 @@ def apply_labels(
     video_labels: dict[str, str],
     audio_labels: dict[str, str],
     allow_overwrite: bool = False,
+    on_copy: Callable[[Path, Path, int, int, str], None] | None = None,
 ) -> dict:
-    argv = [
-        str(working_folder.resolve()),
-        "--video-labels-json",
-        json.dumps(video_labels),
-        "--audio-labels-json",
-        json.dumps(audio_labels),
-    ]
-    if allow_overwrite:
-        argv.append("--allow-overwrite")
-    return _run_json_script(SCRIPTS_DIR / "piab_apply_labels.py", argv)
+    ensure_scripts_path()
+    from harness_overwrite_guard import HarnessOverwriteError
+    from piab_apply_labels import apply_labeled_media_session
+
+    try:
+        return apply_labeled_media_session(
+            working_folder,
+            video_labels=video_labels,
+            audio_labels=audio_labels,
+            allow_overwrite=allow_overwrite,
+            on_copy=on_copy,
+        )
+    except HarnessOverwriteError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def validate_video_labels(labels: dict[str, str]) -> None:

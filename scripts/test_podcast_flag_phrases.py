@@ -9,9 +9,12 @@ from pathlib import Path
 
 from podcast_flag_phrases import (
     find_flag_hits_in_row,
+    format_combined_flag_report,
     format_flag_timestamp_report,
+    format_pause_flag_timestamp_report,
     phrase_token_variants,
     report_flag_timestamps_after_render,
+    scan_dsl_flag_markers,
     scan_dsl_flag_output_times,
 )
 from podcast_phrase_gates import EMBEDDED_DEFAULTS, flag_phrases_from_gates, load_phrase_gates
@@ -85,6 +88,18 @@ class FlagPhraseMatchTests(unittest.TestCase):
         self.assertIn("00:06:23", text)
         self.assertIn("00:21:19", text)
 
+    def test_format_pause_flag_section(self) -> None:
+        text = format_pause_flag_timestamp_report([120.0])
+        self.assertIn("Pause Flags At These Timestamps:", text)
+        self.assertIn("00:02:00", text)
+
+    def test_combined_report(self) -> None:
+        text = format_combined_flag_report([10.0], [120.0])
+        self.assertIn("Flags Dropped At These Timestamps:", text)
+        self.assertIn("Pause Flags At These Timestamps:", text)
+        self.assertIn("00:00:10", text)
+        self.assertIn("00:02:00", text)
+
 
 class FlagDslScanTests(unittest.TestCase):
     def test_scan_dsl_maps_flag_to_output_timeline(self) -> None:
@@ -140,6 +155,54 @@ class FlagDslScanTests(unittest.TestCase):
             self.assertEqual(len(times), 1)
             self.assertAlmostEqual(times[0], 5.5, places=2)
 
+    def test_scan_dsl_pause_flag_at_seam(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            transcript = {
+                "0": {
+                    "start": 0.0,
+                    "end": 5.0,
+                    "text": "Before pause.",
+                    "words": _words(("Before", 0.0, 0.5), ("pause.", 0.6, 1.0)),
+                },
+                "1": {
+                    "start": 10.0,
+                    "end": 15.0,
+                    "text": "After pause.",
+                    "words": _words(("After", 10.0, 10.3), ("pause.", 10.4, 10.8)),
+                },
+            }
+            transcript_path = root / "t.json"
+            transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
+            segments = {
+                "main": {
+                    "transcript_file": str(transcript_path),
+                    "audio_file": "dummy.wav",
+                    "video_files": {
+                        "speaker_0": {"file": "host.mp4", "offset": 0.0},
+                    },
+                }
+            }
+            (root / "segments.json").write_text(json.dumps(segments), encoding="utf-8")
+            dsl = root / "interview.dsl"
+            dsl.write_text(
+                "\n".join(
+                    [
+                        "!cut 0 0",
+                        "!camera speaker_0",
+                        "$segmentmain/0 // Before",
+                        "!pause-flag",
+                        "$segmentmain/1 // After pause seam",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            spoken, pause = scan_dsl_flag_markers(dsl, root)
+            self.assertEqual(spoken, [])
+            self.assertEqual(len(pause), 1)
+            self.assertAlmostEqual(pause[0], 5.0, places=2)
+
     def test_report_writes_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -178,8 +241,10 @@ class FlagDslScanTests(unittest.TestCase):
                 write_report_file=True,
             )
             self.assertEqual(summary["flag_timestamps_hhmmss"], ["00:00:00"])
+            self.assertEqual(summary["pause_flag_timestamps_hhmmss"], [])
             report_file = root / "interview-flag-timestamps.txt"
             self.assertTrue(report_file.is_file())
+            self.assertIn("Pause Flags At These Timestamps:", report_file.read_text(encoding="utf-8"))
             self.assertIn("00:00:00", report_file.read_text(encoding="utf-8"))
 
 

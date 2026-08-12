@@ -1,7 +1,8 @@
 {
-  "start_phrase": "I solemnly swear I'm up to no good, in five four three two",
-  "start_phrase_countdown_tokens": ["five", "four", "three", "two"],
-  "start_phrase_countdown_suffix": ["one", "zero"],
+  "start_trigger_phrase": "I solemnly swear I'm up to no good",
+  "start_countdown_tokens": ["five", "four", "three", "two"],
+  "start_countdown_suffix_tokens": ["one", "zero"],
+  "start_countdown_allow_in": true,
   "end_phrases": [
     "Be excellent to each other and party on dudes",
     "Hut of brown, now sit down"

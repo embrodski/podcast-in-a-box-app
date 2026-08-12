@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -11,12 +12,24 @@ from harness_episode_lib import REPO_ROOT
 
 PHRASE_GATES_FILENAME = "podcast-phrase-gates.json"
 
+# Spoken countdown numbers supported when configuring start_countdown_tokens.
+COUNTDOWN_NUMBER_WORDS: tuple[str, ...] = (
+    "ten",
+    "nine",
+    "eight",
+    "seven",
+    "six",
+    "five",
+    "four",
+    "three",
+    "two",
+)
+
 EMBEDDED_DEFAULTS: dict[str, Any] = {
-    "start_phrase": (
-        "I solemnly swear I'm up to no good, in five four three two"
-    ),
-    "start_phrase_countdown_tokens": ["five", "four", "three", "two"],
-    "start_phrase_countdown_suffix": ["one", "zero"],
+    "start_trigger_phrase": "I solemnly swear I'm up to no good",
+    "start_countdown_tokens": ["five", "four", "three", "two"],
+    "start_countdown_suffix_tokens": ["one", "zero"],
+    "start_countdown_allow_in": True,
     "end_phrases": [
         "Be excellent to each other and party on dudes",
         "Hut of brown, now sit down",
@@ -40,6 +53,11 @@ EMBEDDED_DEFAULTS: dict[str, Any] = {
 }
 
 _STATE_OVERRIDE_KEYS = (
+    "start_trigger_phrase",
+    "start_countdown_tokens",
+    "start_countdown_suffix_tokens",
+    "start_countdown_allow_in",
+    # Legacy keys (still accepted on state / file)
     "start_phrase",
     "start_phrase_countdown_tokens",
     "start_phrase_countdown_suffix",
@@ -56,6 +74,35 @@ _STATE_OVERRIDE_KEYS = (
     "flag_phrases",
     "flag_phrase",
 )
+
+
+def _tokenize_phrase(phrase: str) -> list[str]:
+    cleaned = re.sub(r"[^\w\s']", " ", phrase.lower())
+    return [t for t in cleaned.split() if t]
+
+
+def _split_legacy_combined_start_phrase(
+    combined: str,
+    countdown_tokens: list[str],
+) -> str:
+    """Derive trigger text from a legacy combined start_phrase string."""
+    tokens = _tokenize_phrase(combined)
+    if not tokens or not countdown_tokens:
+        return combined.strip()
+    countdown_set = {t for t in countdown_tokens}
+    first_cd_idx: int | None = None
+    for idx, tok in enumerate(tokens):
+        if tok in countdown_set:
+            first_cd_idx = idx
+            break
+    if first_cd_idx is None:
+        return combined.strip()
+    prefix_end = first_cd_idx
+    if first_cd_idx > 0 and tokens[first_cd_idx - 1] == "in":
+        prefix_end = first_cd_idx - 1
+    if prefix_end <= 0:
+        return combined.strip()
+    return " ".join(tokens[:prefix_end])
 
 
 def flag_phrases_from_gates(gates: dict[str, Any]) -> list[str]:
@@ -76,6 +123,72 @@ def end_phrases_from_gates(gates: dict[str, Any]) -> list[str]:
     return []
 
 
+def start_countdown_tokens_from_gates(gates: dict[str, Any]) -> list[str]:
+    tokens = gates.get("start_countdown_tokens")
+    if tokens is None:
+        tokens = gates.get("start_phrase_countdown_tokens")
+    if not tokens:
+        return []
+    return [str(t).strip().lower() for t in tokens if str(t).strip()]
+
+
+def start_countdown_suffix_from_gates(gates: dict[str, Any]) -> list[str]:
+    suffix = gates.get("start_countdown_suffix_tokens")
+    if suffix is None:
+        suffix = gates.get("start_phrase_countdown_suffix")
+    if not suffix:
+        return []
+    return [str(t).strip().lower() for t in suffix if str(t).strip()]
+
+
+def start_trigger_phrase_from_gates(gates: dict[str, Any]) -> str:
+    trigger = str(gates.get("start_trigger_phrase") or "").strip()
+    if trigger:
+        return trigger
+    legacy = str(gates.get("start_phrase") or "").strip()
+    if not legacy:
+        return ""
+    countdown = start_countdown_tokens_from_gates(gates)
+    if countdown and any(t in legacy.lower() for t in countdown):
+        return _split_legacy_combined_start_phrase(legacy, countdown)
+    return legacy
+
+
+def start_countdown_allow_in_from_gates(gates: dict[str, Any]) -> bool:
+    value = gates.get("start_countdown_allow_in")
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def format_countdown_hint(
+    countdown_tokens: list[str],
+    *,
+    allow_in: bool = True,
+) -> str:
+    if not countdown_tokens:
+        return ""
+    spoken = " ".join(countdown_tokens)
+    if allow_in:
+        return f'in {spoken} (optional "in"; numbers may be skipped)'
+    return f"{spoken} (numbers may be skipped)"
+
+
+def format_start_phrase_display(gates: dict[str, Any]) -> str:
+    """Single-line display of trigger + optional countdown (legacy callers)."""
+    trigger = start_trigger_phrase_from_gates(gates)
+    countdown = start_countdown_tokens_from_gates(gates)
+    if not trigger:
+        return ""
+    if not countdown:
+        return trigger
+    allow_in = start_countdown_allow_in_from_gates(gates)
+    hint = format_countdown_hint(countdown, allow_in=allow_in)
+    return f'{trigger}, then {hint}'
+
+
 def phrase_gates_path(repo_root: Path | None = None) -> Path:
     root = (repo_root or REPO_ROOT).resolve()
     return root / PHRASE_GATES_FILENAME
@@ -87,6 +200,7 @@ def _normalize_gates(raw: dict[str, Any]) -> dict[str, Any]:
         if key not in raw or raw[key] is None:
             continue
         out[key] = raw[key]
+
     unpause = out.get("unpause_phrases") or out.get("unpause_phrase")
     if isinstance(unpause, str):
         out["unpause_phrases"] = [unpause]
@@ -119,6 +233,25 @@ def _normalize_gates(raw: dict[str, Any]) -> dict[str, Any]:
     if flag_phrases:
         out["flag_phrases"] = flag_phrases
     out.pop("flag_phrase", None)
+
+    # Countdown tokens: prefer new keys, fall back to legacy names.
+    countdown = start_countdown_tokens_from_gates(out)
+    if countdown:
+        out["start_countdown_tokens"] = countdown
+    out.pop("start_phrase_countdown_tokens", None)
+
+    suffix = start_countdown_suffix_from_gates(out)
+    if suffix:
+        out["start_countdown_suffix_tokens"] = suffix
+    out.pop("start_phrase_countdown_suffix", None)
+
+    trigger = start_trigger_phrase_from_gates(out)
+    if trigger:
+        out["start_trigger_phrase"] = trigger
+
+    # Legacy combined start_phrase for callers that still read it.
+    out["start_phrase"] = format_start_phrase_display(out)
+
     return out
 
 
@@ -152,6 +285,8 @@ def load_phrase_gates(
         }
         if patch:
             merged = _normalize_gates({**merged, **patch})
+    else:
+        merged = _normalize_gates(merged)
     return merged
 
 
@@ -167,7 +302,9 @@ def save_phrase_gates(
         create_file_if_missing=False,
     )
     merged = _normalize_gates({**current, **updates})
-    path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    # Persist canonical new keys; omit legacy derived start_phrase.
+    to_save = {k: v for k, v in merged.items() if k != "start_phrase"}
+    path.write_text(json.dumps(to_save, indent=2) + "\n", encoding="utf-8")
     return path
 
 
@@ -176,19 +313,20 @@ def podcast_phrase_cli_args(state: dict | None = None) -> list[str]:
     gates = load_phrase_gates(state_overrides=state or {})
     out: list[str] = []
 
-    start_phrase = gates.get("start_phrase")
-    if start_phrase:
-        out.extend(["--start-phrase", str(start_phrase)])
+    trigger = start_trigger_phrase_from_gates(gates)
+    if trigger:
+        out.extend(["--start-trigger-phrase", trigger])
         if gates.get("start_preroll_sec") is not None:
             out.extend(["--start-preroll-sec", str(gates["start_preroll_sec"])])
-        countdown = gates.get("start_phrase_countdown_tokens") or []
-        if countdown:
-            out.extend(["--start-phrase-countdown", *[str(t) for t in countdown]])
-        suffix = gates.get("start_phrase_countdown_suffix") or []
+
+    countdown = start_countdown_tokens_from_gates(gates)
+    if countdown:
+        out.extend(["--start-phrase-countdown", *[str(t) for t in countdown]])
+        suffix = start_countdown_suffix_from_gates(gates)
         if suffix:
-            out.extend(
-                ["--start-phrase-countdown-suffix", *[str(t) for t in suffix]]
-            )
+            out.extend(["--start-phrase-countdown-suffix", *[str(t) for t in suffix]])
+        if not start_countdown_allow_in_from_gates(gates):
+            out.append("--no-start-countdown-in")
 
     end_phrases = end_phrases_from_gates(gates)
     for phrase in end_phrases:
@@ -220,16 +358,21 @@ def apply_namespace_phrase_defaults(args: Any) -> Any:
     Explicit CLI values on ``args`` win over the file.
     """
     gates = load_phrase_gates()
-    if getattr(args, "start_phrase", None) in (None, ""):
-        args.start_phrase = gates.get("start_phrase")
+    if getattr(args, "start_trigger_phrase", None) in (None, ""):
+        if getattr(args, "start_phrase", None) not in (None, ""):
+            args.start_trigger_phrase = str(args.start_phrase)
+        else:
+            args.start_trigger_phrase = start_trigger_phrase_from_gates(gates) or None
     if getattr(args, "start_phrase_countdown", None) is None:
-        args.start_phrase_countdown = list(
-            gates.get("start_phrase_countdown_tokens") or []
-        )
+        tokens = start_countdown_tokens_from_gates(gates)
+        args.start_phrase_countdown = list(tokens) if tokens else []
     if getattr(args, "start_phrase_countdown_suffix", None) is None:
-        args.start_phrase_countdown_suffix = list(
-            gates.get("start_phrase_countdown_suffix") or []
-        )
+        suffix = start_countdown_suffix_from_gates(gates)
+        args.start_phrase_countdown_suffix = list(suffix) if suffix else []
+    if getattr(args, "start_countdown_allow_in", None) is None:
+        args.start_countdown_allow_in = start_countdown_allow_in_from_gates(gates)
+    if not start_countdown_allow_in_from_gates(gates):
+        args.no_start_countdown_in = True
     if not getattr(args, "end_phrase", None):
         args.end_phrase = end_phrases_from_gates(gates)
     if getattr(args, "pause_phrase", None) in (None, ""):

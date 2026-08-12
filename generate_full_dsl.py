@@ -10,7 +10,7 @@ Example:
 By default this generator:
 - Outputs one `$segmentN/id` line per transcript row
 - Adds `!camera ...` commands based on `speaker_id` (0 -> speaker_0, 1 -> speaker_1)
-- **Open on Ben:** for the first `--open-ben-sec` seconds (default 5), every row overlapping
+- **Open on Ben:** for the first `--open-ben-sec` seconds (default 3), every row overlapping
   `[0, open)` is forced to `speaker_0` so there is no cut off Ben during that window
   (row-aligned).
 - **Close on Ben:** for the last `--tail-ben-sec` seconds (default 4) of the timeline
@@ -203,9 +203,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--open-ben-sec",
         type=float,
-        default=5.0,
+        default=3.0,
         help="Force speaker_0 for every transcript row overlapping [0, N) seconds on the "
-             "timeline (default N=5.0). Set to 0 to disable.",
+             "timeline (default N=3.0). Set to 0 to disable.",
     )
     parser.add_argument(
         "--tail-ben-sec",
@@ -228,18 +228,21 @@ def parse_args() -> argparse.Namespace:
              "Off by default for normal two-speaker interviews.",
     )
     parser.add_argument(
-        "--start-phrase",
+        "--start-trigger-phrase",
         default=None,
         help=(
-            "Drop everything through this phrase (case/punctuation-insensitive). "
-            "With --start-phrase-countdown, the oath prefix is matched exactly (allowing "
-            "i am / I'm) and every optional tail token may be skipped in order: a "
-            "trailing ``in`` before the countdown (when configured), each countdown "
-            "number, and optional one/zero suffix words when spoken. The first cut "
-            "begins --start-preroll-sec before the first word after the phrase. "
-            "Default comes from "
+            "Required start trigger (case/punctuation-insensitive; I am / I'm "
+            "equivalent). With --start-phrase-countdown, the optional countdown "
+            "tail may follow the trigger; each tail token may be skipped in order. "
+            "The first cut begins --start-preroll-sec before the first word after "
+            "the trigger (or after the countdown when spoken). Default from "
             "podcast-phrase-gates.json; if absent, start trimming is skipped."
         ),
+    )
+    parser.add_argument(
+        "--start-phrase",
+        default=None,
+        help="Deprecated alias for --start-trigger-phrase.",
     )
     parser.add_argument(
         "--start-preroll-sec",
@@ -252,9 +255,9 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         default=None,
         help=(
-            "Ordered optional tail tokens after the oath prefix; ``in`` (when "
-            "configured before the countdown) and every number may be skipped. "
-            "Default from podcast-phrase-gates.json."
+            "Ordered optional countdown numbers after the trigger (ten through "
+            "two as words). Optional leading ``in`` (see --no-start-countdown-in); "
+            "each number may be skipped. Default from podcast-phrase-gates.json."
         ),
     )
     parser.add_argument(
@@ -267,15 +270,21 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--no-start-countdown-in",
+        action="store_true",
+        help="Do not treat a leading ``in`` before the countdown as optional.",
+    )
+    parser.add_argument(
         "--end-phrase",
         action="append",
         default=None,
         help=(
             "Drop this phrase and everything after it (repeatable; the latest "
             "match among all end phrases wins). The last cut ends "
-            "--end-postroll-sec after the last word before the phrase. Defaults "
-            "come from podcast-phrase-gates.json; if none match, end trimming "
-            "is skipped."
+            "--end-postroll-sec after the last word before the phrase, unless "
+            "the phrase begins within that postroll window — then the cut ends "
+            "just before the first word of the phrase. Defaults come from "
+            "podcast-phrase-gates.json; if none match, end trimming is skipped."
         ),
     )
     parser.add_argument(
@@ -457,47 +466,17 @@ def _prefix_tokens_match(flat: List[FlatWord], start: int, prefix_tokens: List[s
     return _prefix_tokens_match_end(flat, start, prefix_tokens) is not None
 
 
-def _start_countdown_tokens_for_phrase(
-    phrase: str,
-    countdown_tokens: List[str] | None,
+def _build_countdown_optional_tail(
+    countdown_tokens: List[str],
+    *,
+    allow_in: bool,
 ) -> List[str]:
-    """Use countdown matching only when the phrase includes a countdown token."""
+    """Optional spoken tail after the trigger: ``in`` + countdown numbers."""
     if not countdown_tokens:
         return []
-    tokens = _tokenize_phrase(phrase)
-    countdown_set = set(countdown_tokens)
-    if not any(t in countdown_set for t in tokens):
-        return []
+    if allow_in:
+        return ["in", *countdown_tokens]
     return list(countdown_tokens)
-
-
-def _start_phrase_prefix_and_optional_tail(
-    phrase: str,
-    countdown_tokens: List[str],
-) -> tuple[List[str], List[str]]:
-    """
-    Split a start phrase into a required oath prefix and an optional spoken tail.
-
-    The optional tail is ``in`` (when it immediately precedes the first countdown
-    token in the configured phrase) followed by every countdown token. Each tail
-    token may be omitted in order; suffix tokens (``one``, ``zero``) are handled
-    separately.
-    """
-    tokens = _tokenize_phrase(phrase)
-    countdown_set = {t for t in countdown_tokens}
-    first_cd_idx: int | None = None
-    for idx, tok in enumerate(tokens):
-        if tok in countdown_set:
-            first_cd_idx = idx
-            break
-    if first_cd_idx is None:
-        return tokens, []
-    optional_tail = list(countdown_tokens)
-    prefix_end = first_cd_idx
-    if first_cd_idx > 0 and tokens[first_cd_idx - 1] == "in":
-        optional_tail = ["in", *optional_tail]
-        prefix_end = first_cd_idx - 1
-    return tokens[:prefix_end], optional_tail
 
 
 def _consume_optional_spoken_tail(
@@ -560,40 +539,62 @@ def _find_countdown_start_span(
     return None
 
 
+def _start_trigger_exists(
+    rows: List[Row],
+    trigger_phrase: str,
+    *,
+    countdown_tokens: List[str] | None = None,
+    countdown_suffix_tokens: List[str] | None = None,
+    allow_in: bool = True,
+) -> bool:
+    flat = _flatten_match_words(rows)
+    if not flat:
+        return False
+    trigger_tokens = _tokenize_phrase(trigger_phrase)
+    if not trigger_tokens:
+        return False
+    if countdown_tokens:
+        optional_tail = _build_countdown_optional_tail(
+            list(countdown_tokens),
+            allow_in=allow_in,
+        )
+        return (
+            _find_countdown_start_span(
+                flat,
+                prefix_tokens=trigger_tokens,
+                optional_tail_tokens=optional_tail,
+                suffix_tokens=countdown_suffix_tokens or [],
+            )
+            is not None
+        )
+    return _phrase_exists(rows, trigger_phrase)
+
+
 def _start_phrase_exists(
     rows: List[Row],
     phrase: str,
     *,
     countdown_tokens: List[str] | None = None,
     countdown_suffix_tokens: List[str] | None = None,
+    allow_in: bool = True,
 ) -> bool:
-    flat = _flatten_match_words(rows)
-    if not flat:
-        return False
-    if countdown_tokens:
-        active = _start_countdown_tokens_for_phrase(phrase, countdown_tokens)
-        if active:
-            prefix, optional_tail = _start_phrase_prefix_and_optional_tail(
-                phrase, active
-            )
-            return (
-                _find_countdown_start_span(
-                    flat,
-                    prefix_tokens=prefix,
-                    optional_tail_tokens=optional_tail,
-                    suffix_tokens=countdown_suffix_tokens or [],
-                )
-                is not None
-            )
-    return _phrase_exists(rows, phrase)
+    """Backward-compatible alias for tests and legacy callers."""
+    return _start_trigger_exists(
+        rows,
+        phrase,
+        countdown_tokens=countdown_tokens,
+        countdown_suffix_tokens=countdown_suffix_tokens,
+        allow_in=allow_in,
+    )
 
 
-def _apply_start_phrase_countdown(
+def _apply_start_trigger_with_countdown(
     rows: List[Row],
-    phrase: str,
+    trigger_phrase: str,
     *,
     countdown_tokens: List[str],
     countdown_suffix_tokens: List[str],
+    allow_in: bool = True,
     preroll_sec: float,
 ) -> StartPhraseCut:
     if preroll_sec < 0:
@@ -601,21 +602,20 @@ def _apply_start_phrase_countdown(
     flat = _flatten_match_words(rows)
     if not flat:
         raise ValueError(
-            "--start-phrase requires word-level timestamps on simplified transcript rows."
+            "--start-trigger-phrase requires word-level timestamps on simplified transcript rows."
         )
-    prefix, optional_tail = _start_phrase_prefix_and_optional_tail(
-        phrase, countdown_tokens
-    )
+    trigger_tokens = _tokenize_phrase(trigger_phrase)
+    optional_tail = _build_countdown_optional_tail(countdown_tokens, allow_in=allow_in)
     span = _find_countdown_start_span(
         flat,
-        prefix_tokens=prefix,
+        prefix_tokens=trigger_tokens,
         optional_tail_tokens=optional_tail,
         suffix_tokens=countdown_suffix_tokens,
     )
     if span is None:
         raise ValueError(
-            "Start phrase with countdown not found in word-timed transcript: "
-            + " ".join(prefix + optional_tail)
+            "Start trigger with countdown not found in word-timed transcript: "
+            + " ".join(trigger_tokens + optional_tail)
         )
     match_start, match_end = span
     next_word = flat[match_end]
@@ -634,6 +634,26 @@ def _apply_start_phrase_countdown(
         matched_phrase=matched,
         next_word_text=next_word.token,
         host_speaker_id=host_speaker_id,
+    )
+
+
+def _apply_start_phrase_countdown(
+    rows: List[Row],
+    phrase: str,
+    *,
+    countdown_tokens: List[str],
+    countdown_suffix_tokens: List[str],
+    preroll_sec: float,
+    allow_in: bool = True,
+) -> StartPhraseCut:
+    """Backward-compatible alias: ``phrase`` is the trigger only."""
+    return _apply_start_trigger_with_countdown(
+        rows,
+        phrase,
+        countdown_tokens=countdown_tokens,
+        countdown_suffix_tokens=countdown_suffix_tokens,
+        allow_in=allow_in,
+        preroll_sec=preroll_sec,
     )
 
 
@@ -719,11 +739,19 @@ def _apply_end_phrase(
             f"End phrase {' '.join(phrase_tokens)!r} was found, but no timed word precedes it."
         )
     last_word = flat[match_i - 1]
+    end_phrase_start_abs = float(flat[match_i].start)
     kept = rows[: last_word.row_i + 1]
     if not kept:
         raise ValueError("End phrase left no transcript rows to keep.")
     last = kept[-1]
-    content_end_abs = float(last_word.end) + float(postroll_sec)
+    nominal_end_abs = float(last_word.end) + float(postroll_sec)
+    # Mirror of start preroll: extend past the last pre-phrase word by postroll,
+    # unless the end phrase begins within that postroll window — then clamp so
+    # the end phrase (and everything after) never appears in the cut.
+    if end_phrase_start_abs < nominal_end_abs:
+        content_end_abs = end_phrase_start_abs
+    else:
+        content_end_abs = nominal_end_abs
     rel_end = content_end_abs - float(last.start)
     rel_end = max(rel_end, float(last_word.end) - float(last.start))
     last_slice_end = rel_end
@@ -1392,30 +1420,31 @@ def _main_impl() -> int:
     if args.abort_phrase and _phrase_exists(full_rows, str(args.abort_phrase)):
         abort_triggered = True
 
-    if args.start_phrase:
-        countdown_tokens = _start_countdown_tokens_for_phrase(
-            str(args.start_phrase),
-            list(args.start_phrase_countdown or []),
-        )
+    trigger_phrase = args.start_trigger_phrase or args.start_phrase
+    if trigger_phrase:
+        countdown_tokens = list(args.start_phrase_countdown or [])
         countdown_suffix = list(args.start_phrase_countdown_suffix or [])
-        if _start_phrase_exists(
+        allow_in = not bool(getattr(args, "no_start_countdown_in", False))
+        if _start_trigger_exists(
             full_rows,
-            str(args.start_phrase),
+            str(trigger_phrase),
             countdown_tokens=countdown_tokens or None,
             countdown_suffix_tokens=countdown_suffix,
+            allow_in=allow_in,
         ):
             if countdown_tokens:
-                start_cut = _apply_start_phrase_countdown(
+                start_cut = _apply_start_trigger_with_countdown(
                     rows,
-                    str(args.start_phrase),
+                    str(trigger_phrase),
                     countdown_tokens=countdown_tokens,
                     countdown_suffix_tokens=countdown_suffix,
+                    allow_in=allow_in,
                     preroll_sec=float(args.start_preroll_sec),
                 )
             else:
                 start_cut = _apply_start_phrase(
                     rows,
-                    str(args.start_phrase),
+                    str(trigger_phrase),
                     preroll_sec=float(args.start_preroll_sec),
                 )
             rows = start_cut.rows
@@ -1423,7 +1452,7 @@ def _main_impl() -> int:
             content_start_abs = start_cut.content_start_abs
         else:
             phrase_notes.append(
-                f"Start phrase not found ({args.start_phrase!r}); using full transcript start."
+                f"Start trigger not found ({trigger_phrase!r}); using full transcript start."
             )
 
     if args.end_phrase:
@@ -1494,6 +1523,8 @@ def _main_impl() -> int:
             lines.append(f"!opening {preroll_ms}")
         last_i = len(pieces) - 1
         for idx, piece in enumerate(pieces):
+            if piece.seam_after_pause:
+                lines.append("!pause-flag")
             lines.append(
                 _row_segment_line(
                     piece.row,
@@ -1662,6 +1693,8 @@ def _main_impl() -> int:
         piece_i = int(ev["piece_i"])
         piece = pieces[piece_i]
         is_last_event = ev_i == (len(events) - 1)
+        if piece.seam_after_pause:
+            lines.append("!pause-flag")
         lines.append(
             _row_segment_line(
                 piece.row,

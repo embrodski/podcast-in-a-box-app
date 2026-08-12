@@ -24,6 +24,7 @@ RENDER_RELATIVE_OUTPUTS = (
     "Output/full video with audio offset.mp4",
     "Output/Full Interview.delivery.json",
     "Output/Full Interview Transcript.json",
+    "Output/Full Interview Transcript.txt",
 )
 
 RERUN_ONE_MIN_OUTPUTS = (

@@ -96,6 +96,17 @@ def main() -> int:
             **eta,
         )
 
+        current_step = "13_full_render"
+        current_title = "Full interview render"
+        mark_step(
+            state,
+            "13_full_render",
+            title="Full interview render",
+            status="in_progress",
+        )
+        state["resume_at"] = "13_full_render"
+        save_piab_state(working, state)
+
         output_dir = Path(state["paths"]["output"])
         temp = Path(state["paths"]["temp"])
         out_mp4 = output_dir / full_interview_output_name(state)
@@ -132,16 +143,6 @@ def main() -> int:
             state=state,
         )
         state["flag_timestamps"] = flag_summary
-
-        from harness_deliver_video import deliver_piab_full_interview
-
-        state["delivery"] = deliver_piab_full_interview(
-            state,
-            video_path=out_mp4,
-            dry_run=args.delivery_dry_run,
-        )
-        save_piab_state(working, state)
-
         state["full_interview_mp4"] = str(out_mp4)
         mark_step(
             state,
@@ -156,6 +157,55 @@ def main() -> int:
             title="Full interview render",
             status="completed",
             output_mp4=str(out_mp4),
+        )
+
+        mark_step(
+            state,
+            "13_output_transcripts",
+            title="Write Output transcripts",
+            status="in_progress",
+        )
+        current_step = "13_output_transcripts"
+        current_title = "Write Output transcripts"
+        state["resume_at"] = "13_output_transcripts"
+        save_piab_state(working, state)
+
+        from harness_deliver_video import (
+            deliver_piab_full_interview,
+            write_piab_output_transcripts,
+        )
+
+        transcript_artifacts = write_piab_output_transcripts(state, output_dir)
+        state.update(transcript_artifacts)
+        mark_step(
+            state,
+            "13_output_transcripts",
+            title="Write Output transcripts",
+            status="completed",
+        )
+
+        mark_step(
+            state,
+            "13_delivery",
+            title="Deliver full interview",
+            status="in_progress",
+        )
+        current_step = "13_delivery"
+        current_title = "Deliver full interview"
+        state["resume_at"] = "13_delivery"
+        save_piab_state(working, state)
+
+        state["delivery"] = deliver_piab_full_interview(
+            state,
+            video_path=out_mp4,
+            dry_run=args.delivery_dry_run,
+        )
+        mark_step(
+            state,
+            "13_delivery",
+            title="Deliver full interview",
+            status="completed",
+            delivery=state.get("delivery"),
         )
         mark_step(
             state,
@@ -201,6 +251,9 @@ def main() -> int:
             "message": f"Full render is complete: {out_mp4}",
             "flag_timestamps_hhmmss": state.get("flag_timestamps", {}).get(
                 "flag_timestamps_hhmmss", []
+            ),
+            "pause_flag_timestamps_hhmmss": state.get("flag_timestamps", {}).get(
+                "pause_flag_timestamps_hhmmss", []
             ),
             "delivery": state.get("delivery"),
         }

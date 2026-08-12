@@ -167,6 +167,10 @@ class StartEndPhraseTests(unittest.TestCase):
         self.assertEqual(cut.next_word_text, "jolly")
         self.assertEqual(cut.host_speaker_id, 0)
 
+    _TRIGGER = "I solemnly swear I'm up to no good"
+    _COUNTDOWN = ["five", "four", "three", "two"]
+    _COUNTDOWN_SUFFIX = ["one", "zero"]
+
     def _oath_countdown_rows(self, *, oath_words, countdown_words, next_word) -> list[Row]:
         words = list(oath_words) + list(countdown_words) + [next_word]
         return [
@@ -204,9 +208,9 @@ class StartEndPhraseTests(unittest.TestCase):
         )
         cut = _apply_start_phrase_countdown(
             rows,
-            "I solemnly swear I'm up to no good, in five four three two",
-            countdown_tokens=["five", "four", "three", "two"],
-            countdown_suffix_tokens=["one", "zero"],
+            self._TRIGGER,
+            countdown_tokens=self._COUNTDOWN,
+            countdown_suffix_tokens=self._COUNTDOWN_SUFFIX,
             preroll_sec=1.0,
         )
         self.assertEqual(cut.next_word_text, "perfect")
@@ -239,9 +243,9 @@ class StartEndPhraseTests(unittest.TestCase):
         )
         cut = _apply_start_phrase_countdown(
             rows,
-            "I solemnly swear I'm up to no good, in five four three two",
-            countdown_tokens=["five", "four", "three", "two"],
-            countdown_suffix_tokens=["one", "zero"],
+            self._TRIGGER,
+            countdown_tokens=self._COUNTDOWN,
+            countdown_suffix_tokens=self._COUNTDOWN_SUFFIX,
             preroll_sec=1.0,
         )
         self.assertEqual(cut.next_word_text, "welcome")
@@ -270,9 +274,9 @@ class StartEndPhraseTests(unittest.TestCase):
         )
         cut = _apply_start_phrase_countdown(
             rows,
-            "I solemnly swear I'm up to no good, in five four three two",
-            countdown_tokens=["five", "four", "three", "two"],
-            countdown_suffix_tokens=["one", "zero"],
+            self._TRIGGER,
+            countdown_tokens=self._COUNTDOWN,
+            countdown_suffix_tokens=self._COUNTDOWN_SUFFIX,
             preroll_sec=1.0,
         )
         self.assertEqual(cut.next_word_text, "perfect")
@@ -302,9 +306,9 @@ class StartEndPhraseTests(unittest.TestCase):
         self.assertTrue(
             _start_phrase_exists(
                 rows,
-                "I solemnly swear I'm up to no good, in five four three two",
-                countdown_tokens=["five", "four", "three", "two"],
-                countdown_suffix_tokens=["one", "zero"],
+                self._TRIGGER,
+                countdown_tokens=self._COUNTDOWN,
+                countdown_suffix_tokens=self._COUNTDOWN_SUFFIX,
             )
         )
 
@@ -351,9 +355,9 @@ class StartEndPhraseTests(unittest.TestCase):
         ]
         cut = _apply_start_phrase_countdown(
             rows,
-            "I solemnly swear I'm up to no good, in five four three two",
-            countdown_tokens=["five", "four", "three", "two"],
-            countdown_suffix_tokens=["one", "zero"],
+            self._TRIGGER,
+            countdown_tokens=self._COUNTDOWN,
+            countdown_suffix_tokens=self._COUNTDOWN_SUFFIX,
             preroll_sec=1.0,
         )
         self.assertEqual(cut.next_word_text, "perfect")
@@ -382,15 +386,90 @@ class StartEndPhraseTests(unittest.TestCase):
         )
         cut = _apply_start_phrase_countdown(
             rows,
-            "I solemnly swear I'm up to no good, in five four three two",
-            countdown_tokens=["five", "four", "three", "two"],
-            countdown_suffix_tokens=["one", "zero"],
+            self._TRIGGER,
+            countdown_tokens=self._COUNTDOWN,
+            countdown_suffix_tokens=self._COUNTDOWN_SUFFIX,
             preroll_sec=1.0,
         )
         self.assertEqual(cut.next_word_text, "perfect")
         self.assertIn("five", cut.matched_phrase)
         self.assertIn("two", cut.matched_phrase)
         self.assertNotIn("in", cut.matched_phrase)
+
+    def test_start_trigger_countdown_accepts_ten_through_two(self) -> None:
+        rows = self._oath_countdown_rows(
+            oath_words=[
+                ("I", 10.0, 10.1),
+                ("solemnly", 10.2, 10.5),
+                ("swear", 10.6, 10.9),
+                ("I'm", 11.0, 11.2),
+                ("up", 11.4, 11.5),
+                ("to", 11.6, 11.7),
+                ("no", 11.8, 11.9),
+                ("good,", 12.0, 12.3),
+                ("in", 12.4, 12.5),
+            ],
+            countdown_words=[
+                ("ten", 12.6, 12.8),
+                ("nine", 12.9, 13.0),
+                ("eight", 13.1, 13.2),
+                ("seven", 13.3, 13.4),
+                ("six", 13.5, 13.6),
+                ("five", 13.7, 13.8),
+                ("four", 13.9, 14.0),
+                ("three", 14.1, 14.2),
+                ("two", 14.3, 14.4),
+            ],
+            next_word=("Welcome.", 14.8, 15.2),
+        )
+        full_countdown = [
+            "ten",
+            "nine",
+            "eight",
+            "seven",
+            "six",
+            "five",
+            "four",
+            "three",
+            "two",
+        ]
+        cut = _apply_start_phrase_countdown(
+            rows,
+            self._TRIGGER,
+            countdown_tokens=full_countdown,
+            countdown_suffix_tokens=self._COUNTDOWN_SUFFIX,
+            preroll_sec=1.0,
+        )
+        self.assertEqual(cut.next_word_text, "welcome")
+        self.assertIn("ten", cut.matched_phrase)
+        self.assertIn("two", cut.matched_phrase)
+
+    def test_start_trigger_countdown_can_start_mid_sequence(self) -> None:
+        rows = self._oath_countdown_rows(
+            oath_words=[
+                ("I", 10.0, 10.1),
+                ("solemnly", 10.2, 10.5),
+                ("swear", 10.6, 10.9),
+                ("I'm", 11.0, 11.2),
+                ("up", 11.4, 11.5),
+                ("to", 11.6, 11.7),
+                ("no", 11.8, 11.9),
+                ("good,", 12.0, 12.3),
+            ],
+            countdown_words=[
+                ("three", 12.6, 12.8),
+                ("two", 12.9, 13.0),
+            ],
+            next_word=("Go.", 13.4, 13.8),
+        )
+        cut = _apply_start_phrase_countdown(
+            rows,
+            self._TRIGGER,
+            countdown_tokens=self._COUNTDOWN,
+            countdown_suffix_tokens=self._COUNTDOWN_SUFFIX,
+            preroll_sec=1.0,
+        )
+        self.assertEqual(cut.next_word_text, "go")
 
     def test_start_phrase_speaker_becomes_host_camera(self) -> None:
         from generate_full_dsl import _cam_by_speaker_with_host, _main_impl
@@ -469,7 +548,7 @@ class StartEndPhraseTests(unittest.TestCase):
             self.assertRegex(text, r"!camera speaker_0\s*\n\$segmentmain/0")
 
     def test_end_phrase_keeps_one_second_after_prior_word(self) -> None:
-        # First apply start so end phrase matches the later occurrence contextually.
+        # End phrase starts within postroll — clamp before first end-phrase word.
         started = _apply_start_phrase(
             self.rows,
             "Hut of brown, now sit down.",
@@ -482,8 +561,52 @@ class StartEndPhraseTests(unittest.TestCase):
         )
         self.assertEqual([r.idx for r in cut.rows], [1, 2])
         self.assertEqual(cut.last_word_text, "fun")
-        # fun ends at 21.0; +1s postroll = 22.0; relative to row start 20.0 => 2.0
-        self.assertAlmostEqual(cut.content_end_abs, 22.0)
+        # fun ends at 21.0; end phrase "Hut" starts at 21.2 (< 22.0 postroll cap).
+        self.assertAlmostEqual(cut.content_end_abs, 21.2)
+        self.assertAlmostEqual(cut.last_slice_end or -1.0, 1.2)
+
+    def test_end_phrase_full_postroll_when_end_phrase_after_postroll(self) -> None:
+        rows = [
+            Row(
+                idx=0,
+                start=0.0,
+                end=5.0,
+                text="Intro.",
+                speaker_id=0,
+                speaker_name="Host",
+                words=_words(("Intro.", 0.0, 0.5)),
+            ),
+            Row(
+                idx=1,
+                start=10.0,
+                end=20.0,
+                text="Content ends here. Be excellent to each other and party on dudes.",
+                speaker_id=0,
+                speaker_name="Host",
+                words=_words(
+                    ("Content", 10.0, 10.3),
+                    ("ends", 10.4, 10.6),
+                    ("here.", 10.7, 11.0),
+                    ("Be", 14.0, 14.1),
+                    ("excellent", 14.2, 14.5),
+                    ("to", 14.6, 14.7),
+                    ("each", 14.8, 14.9),
+                    ("other", 15.0, 15.2),
+                    ("and", 15.3, 15.4),
+                    ("party", 15.5, 15.7),
+                    ("on", 15.8, 15.9),
+                    ("dudes", 16.0, 16.3),
+                ),
+            ),
+        ]
+        cut = _apply_end_phrase(
+            rows,
+            "Be excellent to each other and party on dudes",
+            postroll_sec=1.0,
+        )
+        self.assertEqual(cut.last_word_text, "here")
+        # Last content word ends 11.0; end phrase starts 14.0 — full 1s postroll applies.
+        self.assertAlmostEqual(cut.content_end_abs, 12.0)
         self.assertAlmostEqual(cut.last_slice_end or -1.0, 2.0)
 
     def test_latest_end_phrase_wins_among_alternates(self) -> None:
@@ -551,7 +674,7 @@ class StartEndPhraseTests(unittest.TestCase):
                 _sys.argv = old
             self.assertEqual(rc, 0)
             text = out.read_text(encoding="utf-8")
-            self.assertIn("Start phrase not found", text)
+            self.assertIn("Start trigger not found", text)
             self.assertIn("$segmentmain/0", text)
 
     def test_cli_emits_opening_and_slice(self) -> None:
@@ -691,7 +814,55 @@ class PauseUnpauseTests(unittest.TestCase):
         self.assertEqual(len(seam_pieces), 1)
         self.assertIn("Welcome", seam_pieces[0].row.text)
 
-    def test_pause_seam_marks_first_piece_when_postroll_precedes_row_start(self) -> None:
+    def test_dsl_emits_pause_flag_at_seam(self) -> None:
+        transcript = {
+            str(r.idx): {
+                "start": r.start,
+                "end": r.end,
+                "text": r.text,
+                "speaker_id": r.speaker_id,
+                "speaker_name": r.speaker_name,
+                "words": [
+                    {"text": w.text, "start": w.start, "end": w.end} for w in r.words
+                ],
+            }
+            for r in self.rows
+        }
+        with tempfile.TemporaryDirectory() as td:
+            import sys as _sys
+
+            from generate_full_dsl import _main_impl
+
+            src = Path(td) / "t.json"
+            out = Path(td) / "out.dsl"
+            src.write_text(json.dumps(transcript), encoding="utf-8")
+            argv = [
+                "generate_full_dsl.py",
+                str(src),
+                "--segment",
+                "main",
+                "--output",
+                str(out),
+                "--pause-phrase",
+                "Computer Freeze Program.",
+                "--unpause-phrase",
+                "Computer Resume Program",
+                "--no-cameras",
+                "--no-camera-switch-offset",
+            ]
+            old = _sys.argv
+            try:
+                _sys.argv = argv
+                rc = _main_impl()
+            finally:
+                _sys.argv = old
+            self.assertEqual(rc, 0)
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("!pause-flag", text)
+            self.assertLess(
+                text.index("!pause-flag"),
+                text.index("Welcome"),
+            )
         """Resume abs can fall before the first kept row start (postroll gap)."""
         from generate_full_dsl import _apply_pause_unpause_to_pieces
 

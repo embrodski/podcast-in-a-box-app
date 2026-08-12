@@ -59,7 +59,7 @@ Shared PIAB logic lives in both repos. The **app** vendors copies under `scripts
 
 ### Copy as-is (new files only)
 
-- New shared modules with no app-specific fork (e.g. `harness_av_sync_lib.py`, new one-off `piab_*.py` helpers)
+- New shared modules with no app-specific fork (e.g. `harness_av_sync_lib.py`, `harness_loudnorm.py`, new one-off `piab_*.py` helpers)
 
 ### Merge manually (diff both sides)
 
@@ -87,6 +87,10 @@ python -m unittest tests.test_controller -v
 ```
 
 Confirm `collect_session_scan` still accepts `cluster_index` and the GUI special-folder scan works.
+
+## Prep loudness normalization
+
+Video-sync prep (`*-prepped.mp4` / `*-prepped.wav`) is two-pass loudnorm'd to **−14 LUFS**. Multicam applies pass 2 during re-encode (pass 1 uses `-vn` on trimmed audio); single-camera prep uses post-copy loudnorm. See [`docs/loudness-normalization.md`](docs/loudness-normalization.md).
 
 ### State files (do not mix)
 

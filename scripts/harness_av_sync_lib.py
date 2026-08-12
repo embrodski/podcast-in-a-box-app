@@ -323,6 +323,8 @@ def run_sync_ab_one_min_tests(
     state: dict[str, Any],
     *,
     allow_overwrite: bool,
+    one_min_no_offset_name: str = ONE_MIN_NO_OFFSET,
+    one_min_forced_offset_name: str = ONE_MIN_FORCED_OFFSET,
 ) -> dict[str, Any]:
     """
     Render ``1 Min Test no offset`` and ``1 Min Test forced audio offset``.
@@ -340,8 +342,8 @@ def run_sync_ab_one_min_tests(
         raise FileNotFoundError("main_prepped missing from state.")
 
     forced_prep = ensure_forced_offset_prep(state, allow_overwrite=allow_overwrite)
-    no_offset_mp4 = output_dir / ONE_MIN_NO_OFFSET
-    forced_mp4 = output_dir / ONE_MIN_FORCED_OFFSET
+    no_offset_mp4 = output_dir / one_min_no_offset_name
+    forced_mp4 = output_dir / one_min_forced_offset_name
 
     render_one_min_with_prep(
         interview_dsl=interview_dsl,

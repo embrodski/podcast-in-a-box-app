@@ -84,14 +84,18 @@ def send_delivery_success_email(
     to_addr: str,
     episode_name: str,
     short_url: str,
+    flag_report: str | None = None,
     sender: Callable[[SmtpConfig, EmailMessage], None] | None = None,
 ) -> None:
     subject = f"Your podcast interview is ready — {episode_name}"
     body = (
         f"Your Full Interview video for {episode_name} is ready.\n\n"
         f"View and download:\n{short_url}\n\n"
+        "The share includes the interview video and a human-readable transcript.\n"
         "This link does not expire."
     )
+    if flag_report and flag_report.strip():
+        body += f"\n\nFlags in the final edit:\n{flag_report.strip()}"
     send_email(
         config,
         to_addr=to_addr,

@@ -8,6 +8,7 @@ Format:
   !shorten-join [20 20]           // Next join: overlap padding + audio crossfade (ms)
   !opening 1000                   // Start first content clip/group this many ms early
   !volume 1.2                     // Set main audio volume (1.0 = 100%)
+  !pause-flag                      // Pause-seam marker (reporting only)
   !fade to black 100              // Fade to black
   !fade from black 100            // Fade from black
   !black 500                      // Black frames for duration
@@ -35,6 +36,7 @@ from .commands import (
     AudioCommand,
     VolumeCommand,
     ShortenJoinCommand,
+    PauseFlagCommand,
 )
 
 
@@ -227,6 +229,11 @@ def parse_dsl_line(line: str) -> Optional[DSLCommand]:
                     f"'!shorten-join 20 20': {line}"
                 )
             return ShortenJoinCommand(padding_ms, crossfade_ms)
+
+        elif command_type == 'pause-flag':
+            if len(parts) != 1:
+                raise ValueError(f"Pause-flag format: '!pause-flag': {line}")
+            return PauseFlagCommand()
 
         else:
             raise ValueError(f"Unknown command type: {command_type}")

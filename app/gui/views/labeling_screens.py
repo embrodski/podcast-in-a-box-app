@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from app.gui.dialogs import confirm_action
 from app.gui.widgets.path_banner import PathBanner
 from app.gui.widgets.screen_base import ScreenWidget
-from app.gui.widgets.selectable_text import body_label, heading_label
+from app.gui.widgets.selectable_text import body_label, heading_label, selectable_plain_text
 from app.gui.widgets.worker import CallableWorker
 
 
@@ -97,9 +97,6 @@ class LabelCamerasScreen(ScreenWidget):
         back = QPushButton("Back")
         back.clicked.connect(lambda: self.navigate.emit("C4"))
         row.addWidget(back)
-        swap = QPushButton("Swap Host ↔ Guest")
-        swap.clicked.connect(self._swap_host_guest)
-        row.addWidget(swap)
         row.addStretch()
         self._continue = QPushButton("Continue")
         self._continue.setDefault(True)
@@ -212,18 +209,6 @@ class LabelCamerasScreen(ScreenWidget):
                 labels[source] = role
         return labels
 
-    def _swap_host_guest(self) -> None:
-        for group in self._role_groups.values():
-            role = _selected_role(group)
-            if role == "host":
-                for btn in group.buttons():
-                    if btn.property("role") == "guest":
-                        btn.setChecked(True)
-            elif role == "guest":
-                for btn in group.buttons():
-                    if btn.property("role") == "host":
-                        btn.setChecked(True)
-
     def _go_next(self) -> None:
         labels = self._collect_labels()
         if len(labels) != len(self._role_groups):
@@ -281,9 +266,6 @@ class LabelMicrophonesScreen(ScreenWidget):
         back = QPushButton("Back")
         back.clicked.connect(lambda: self.navigate.emit("D1"))
         row.addWidget(back)
-        swap = QPushButton("Swap Host ↔ Guest")
-        swap.clicked.connect(self._swap_host_guest)
-        row.addWidget(swap)
         row.addStretch()
         cont = QPushButton("Continue")
         cont.setDefault(True)
@@ -412,18 +394,6 @@ class LabelMicrophonesScreen(ScreenWidget):
                 labels[source] = role
         return labels
 
-    def _swap_host_guest(self) -> None:
-        for group in self._mic_groups.values():
-            role = _selected_role(group)
-            if role == "host":
-                for btn in group.buttons():
-                    if btn.property("role") == "guest":
-                        btn.setChecked(True)
-            elif role == "guest":
-                for btn in group.buttons():
-                    if btn.property("role") == "host":
-                        btn.setChecked(True)
-
     def _go_next(self) -> None:
         labels = self._collect_labels()
         if len(labels) != len(self._mic_groups):
@@ -453,13 +423,15 @@ class ApplyLabelsScreen(ScreenWidget):
     def __init__(self, controller, parent=None) -> None:
         super().__init__(controller, parent)
         self._worker: CallableWorker | None = None
+        self._log_lines: list[str] = []
 
         layout = QVBoxLayout(self)
         self._headline = heading_label("Applying labels…")
         layout.addWidget(self._headline)
-        self._detail = body_label("")
+        self._detail = body_label("Moving files into the Raw folder…")
         layout.addWidget(self._detail)
-        layout.addStretch()
+        self._log = selectable_plain_text(visible_rows=10)
+        layout.addWidget(self._log, stretch=1)
 
         row = QHBoxLayout()
         back = QPushButton("Back")
@@ -483,28 +455,73 @@ class ApplyLabelsScreen(ScreenWidget):
             return
 
         self._headline.setText("Applying labels…")
-        self._detail.setText("Moving files into the Raw folder…")
+        self._detail.setText("Copying labeled files into Raw…")
+        self._log_lines = ["Preparing to copy files…"]
+        self._log.setPlainText(self._log_lines[0])
         self._retry.hide()
 
         if self._worker is not None and self._worker.isRunning():
             return
 
         self._worker = CallableWorker(self._apply, ctx, folder)
+        self._worker.progress.connect(self._on_copy_progress)
         self._worker.finished_ok.connect(lambda _r: self.navigate.emit("D4"))
         self._worker.failed.connect(self._on_fail)
         self._worker.start()
 
-    def _apply(self, ctx, folder: Path) -> dict:
+    def _append_log(self, line: str) -> None:
+        self._log_lines.append(line)
+        self._log.setPlainText("\n".join(self._log_lines))
+        scrollbar = self._log.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _on_copy_progress(self, event: dict) -> None:
+        phase = event.get("phase")
+        src = event.get("src", "")
+        dest = event.get("dest", "")
+        index = event.get("index", 0)
+        total = event.get("total", 0)
+        if phase == "start":
+            if self._log_lines == ["Preparing to copy files…"]:
+                self._log_lines = []
+                self._log.setPlainText("")
+            self._append_log(f"[{index}/{total}] Copying…")
+            self._append_log(f"  from: {src}")
+            self._append_log(f"  to:   {dest}")
+        elif phase == "done":
+            self._append_log("  ✓ done")
+        elif phase == "skipped":
+            if self._log_lines == ["Preparing to copy files…"]:
+                self._log_lines = []
+                self._log.setPlainText("")
+            self._append_log(f"[{index}/{total}] Already in Raw (skipped)")
+            self._append_log(f"  {dest}")
+
+    def _apply(self, ctx, folder: Path, progress=None) -> dict:
+        def on_copy(src: Path, dest: Path, index: int, total: int, phase: str) -> None:
+            if progress is not None:
+                progress(
+                    {
+                        "phase": phase,
+                        "src": str(src),
+                        "dest": str(dest),
+                        "index": index,
+                        "total": total,
+                    }
+                )
+
         return self.controller.apply_labels(
             folder,
             video_labels=ctx.video_labels or {},
             audio_labels=ctx.audio_labels or {},
             allow_overwrite=ctx.allow_overwrite,
+            on_copy=on_copy,
         )
 
     def _on_fail(self, message: str) -> None:
         self._headline.setText("Could not apply labels")
         self._detail.setText(message)
+        self._append_log(f"ERROR: {message}")
         self._retry.show()
         if "overwrite" in message.lower():
             ctx = self.context()
@@ -565,7 +582,9 @@ class EstimatePrepScreen(ScreenWidget):
             return
 
         eta = state.get("estimate_prep") or {}
-        if not eta:
+        eta_fast = state.get("estimate_prep_fast") or {}
+        fast = bool(state.get("fast_preview_eligible"))
+        if not eta and not fast:
             self._summary.setText(
                 "Prep estimate is not available yet. Go back and apply labels first."
             )
@@ -579,9 +598,26 @@ class EstimatePrepScreen(ScreenWidget):
             "Labeling is complete. Files are in the session Raw folder.",
             "",
             f"Source recording length: {source_human}",
-            f"Estimated prep time (through 1-minute preview): {summary}",
-            "",
-            "This includes syncing audio and video, transcription, and rendering "
-            "a one-minute test clip for your review.",
         ]
+        if fast:
+            fast_summary = str(eta_fast.get("summary") or "a few minutes")
+            lines.extend(
+                [
+                    "",
+                    "Fast Preview is enabled (interview longer than 10 minutes).",
+                    f"Estimated Fast Preview time: {fast_summary}",
+                    "",
+                    "You will review a 1-minute preview from the first 5 minutes of "
+                    "source media, then the app will process the full interview.",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"Estimated prep time (through 1-minute preview): {summary}",
+                    "",
+                    "This includes syncing audio and video, transcription, and rendering "
+                    "a one-minute test clip for your review.",
+                ]
+            )
         self._summary.setText("\n".join(lines))

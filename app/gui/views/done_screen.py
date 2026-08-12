@@ -15,7 +15,12 @@ from PySide6.QtWidgets import (
 
 from app.gui.widgets.path_banner import PathBanner
 from app.gui.widgets.screen_base import ScreenWidget
-from app.gui.widgets.selectable_text import body_label, heading_label
+from app.gui.widgets.selectable_text import (
+    body_label,
+    heading_label,
+    selectable_plain_text,
+    set_plain_lines,
+)
 from app.gui.widgets.worker import CallableWorker
 
 
@@ -35,6 +40,10 @@ class DoneScreen(ScreenWidget):
 
         self._banner = PathBanner()
         layout.addWidget(self._banner)
+
+        layout.addWidget(heading_label("Flags in the final edit"))
+        self._flag_report = selectable_plain_text(visible_rows=8)
+        layout.addWidget(self._flag_report)
 
         self._extra_box = QWidget()
         extra_layout = QVBoxLayout(self._extra_box)
@@ -80,6 +89,7 @@ class DoneScreen(ScreenWidget):
         if folder is None:
             self._summary.setText("Session folder is not available.")
             self._banner.set_path(None)
+            set_plain_lines(self._flag_report, [])
             return
 
         self._banner.set_path(folder)
@@ -88,7 +98,20 @@ class DoneScreen(ScreenWidget):
             state = self.controller.load_session_state(folder)
         except Exception as exc:
             self._summary.setText(f"Could not read session state:\n{exc}")
+            set_plain_lines(self._flag_report, [])
             return
+
+        try:
+            report_text = self.controller.load_flag_report_text(folder)
+        except Exception:
+            report_text = ""
+        report_lines = report_text.splitlines() if report_text else []
+        set_plain_lines(self._flag_report, report_lines)
+        row_count = max(len(report_lines), 5)
+        row_height = self._flag_report.fontMetrics().lineSpacing()
+        self._flag_report.setFixedHeight(
+            row_height * min(row_count, 14) + 2 * self._flag_report.frameWidth() + 8
+        )
 
         delivery = state.get("delivery") or {}
         output_dir = Path(str((state.get("paths") or {}).get("output") or folder / "Output"))

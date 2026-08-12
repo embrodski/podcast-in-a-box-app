@@ -42,7 +42,8 @@ class JobRunner:
         return sum(
             1
             for entry in self._jobs.values()
-            if entry.job.kind in {"prep", "render"} and entry.job.status == "running"
+            if entry.job.kind in {"prep", "render", "fast_preview", "full_after_preview"}
+            and entry.job.status == "running"
         )
 
     def running_processing_count(self) -> int:
@@ -76,7 +77,7 @@ class JobRunner:
         session_folder: Path | None = None,
         on_complete: Callable[[Job], None] | None = None,
     ) -> Job:
-        if kind in {"prep", "render"}:
+        if kind in {"prep", "render", "fast_preview", "full_after_preview"}:
             with self._lock:
                 if self._processing_running_locked() >= self.max_processing_jobs:
                     raise RuntimeError(

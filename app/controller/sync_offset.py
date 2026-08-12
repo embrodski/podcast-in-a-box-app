@@ -24,9 +24,23 @@ def needs_sync_offset_choice(state: dict) -> bool:
 def resolve_ab_test_paths(state: dict, working_folder: Path) -> tuple[Path, Path]:
     """Return (no_offset_mp4, forced_offset_mp4)."""
     folder = working_folder.resolve()
-    output = folder / "Output"
     ensure_scripts_path()
+    from app.controller.fast_preview import fast_preview_review_pending
     from harness_av_sync_lib import ONE_MIN_FORCED_OFFSET, ONE_MIN_NO_OFFSET
+    from piab_fast_preview_lib import (
+        PREVIEW_ONE_MIN_FORCED_OFFSET,
+        PREVIEW_ONE_MIN_NO_OFFSET,
+        preview_root,
+    )
+
+    if fast_preview_review_pending(state):
+        output = preview_root(folder) / "Output"
+        default_no = PREVIEW_ONE_MIN_NO_OFFSET
+        default_forced = PREVIEW_ONE_MIN_FORCED_OFFSET
+    else:
+        output = folder / "Output"
+        default_no = ONE_MIN_NO_OFFSET
+        default_forced = ONE_MIN_FORCED_OFFSET
 
     no_raw = state.get("podcast_autocut_test_mp4_no_offset")
     forced_raw = state.get("podcast_autocut_test_mp4_forced_offset")
@@ -37,8 +51,8 @@ def resolve_ab_test_paths(state: dict, working_folder: Path) -> tuple[Path, Path
         if not forced_raw and step.get("one_min_forced_offset"):
             forced_raw = step["one_min_forced_offset"]
 
-    no_path = Path(str(no_raw)) if no_raw else output / ONE_MIN_NO_OFFSET
-    forced_path = Path(str(forced_raw)) if forced_raw else output / ONE_MIN_FORCED_OFFSET
+    no_path = Path(str(no_raw)) if no_raw else output / default_no
+    forced_path = Path(str(forced_raw)) if forced_raw else output / default_forced
     if not no_path.is_file():
         raise FileNotFoundError(f"Missing sync A/B preview: {no_path}")
     if not forced_path.is_file():

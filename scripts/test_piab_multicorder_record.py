@@ -18,10 +18,12 @@ from piab_multicorder_record import (
 class PiabMulticorderRecordTests(unittest.TestCase):
     def test_build_recording_message_includes_phrases(self) -> None:
         message = build_recording_message(
-            start_phrase="Start here",
+            trigger_phrase="Start here",
             end_phrases=["End one", "End two"],
+            countdown_tokens=["five", "four", "three", "two"],
         )
-        self.assertIn('Start Phrase ("Start here")', message)
+        self.assertIn('Start Trigger ("Start here")', message)
+        self.assertIn("count down", message.lower())
         self.assertIn('Ending Phrase ("End one" or "End two")', message)
         self.assertIn("THIS WILL STOP RECORDING", message)
 
@@ -58,7 +60,7 @@ class PiabMulticorderRecordTests(unittest.TestCase):
             fetch_active=fake_active,
             print_fn=lambda *_args, **_kwargs: None,
             gates={
-                "start_phrase": "Start phrase",
+                "start_trigger_phrase": "Start phrase",
                 "end_phrases": ["End phrase"],
             },
         )

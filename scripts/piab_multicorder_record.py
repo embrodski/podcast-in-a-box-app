@@ -16,7 +16,13 @@ from piab_vmix_api import (
     is_multicorder_active,
     wait_for_vmix_api,
 )
-from podcast_phrase_gates import end_phrases_from_gates, load_phrase_gates
+from podcast_phrase_gates import (
+    end_phrases_from_gates,
+    load_phrase_gates,
+    start_countdown_allow_in_from_gates,
+    start_countdown_tokens_from_gates,
+    start_trigger_phrase_from_gates,
+)
 
 # Future standalone PIAB app: set True (or PIAB_USE_CONTINUE_BUTTON=1) to replace
 # the stdin prompt with a UI Continue button wired to ``continue_event``.
@@ -85,14 +91,42 @@ def format_end_phrase_display(end_phrases: list[str]) -> str:
     return '" or "'.join(cleaned)
 
 
-def build_recording_message(*, start_phrase: str, end_phrases: list[str]) -> str:
+def build_recording_message(
+    *,
+    trigger_phrase: str,
+    end_phrases: list[str],
+    countdown_tokens: list[str] | None = None,
+    allow_in: bool = True,
+) -> str:
     end_display = format_end_phrase_display(end_phrases)
-    return (
-        "Program is running. Please sit and activate with the Start Phrase "
-        f'("{start_phrase}") whenever you are ready. When you are finished end with '
-        f'the Ending Phrase ("{end_display}") and then return here for final steps.\n'
+    start_lines = [
+        "Program is running. Please sit and activate with the Start Trigger "
+        f'("{trigger_phrase}") whenever you are ready.'
+    ]
+    if countdown_tokens:
+        from podcast_phrase_gates import format_countdown_hint
+
+        hint = format_countdown_hint(countdown_tokens, allow_in=allow_in)
+        start_lines.append(
+            f"Optionally count down ({hint}) before you begin the interview."
+        )
+    start_lines.append(
+        f'When you are finished, end with the Ending Phrase ("{end_display}") '
+        "and then return here for final steps."
+    )
+    start_lines.append(
         "When you are done recording your podcast, type or press Continue. "
         "THIS WILL STOP RECORDING! DO NOT PUSH UNTIL YOU ARE DONE WITH THE PODCAST!"
+    )
+    return "\n".join(start_lines)
+
+
+def build_recording_message_legacy(*, start_phrase: str, end_phrases: list[str]) -> str:
+    """Deprecated: combined start_phrase string."""
+    return build_recording_message(
+        trigger_phrase=start_phrase,
+        end_phrases=end_phrases,
+        countdown_tokens=None,
     )
 
 
@@ -267,12 +301,14 @@ def run_multicorder_session(    *,
         )
 
     phrase_gates = gates if gates is not None else load_phrase_gates()
-    start_phrase = str(phrase_gates.get("start_phrase") or "").strip()
+    trigger = start_trigger_phrase_from_gates(phrase_gates)
     end_phrases = end_phrases_from_gates(phrase_gates)
-    if not start_phrase:
+    countdown = start_countdown_tokens_from_gates(phrase_gates)
+    allow_in = start_countdown_allow_in_from_gates(phrase_gates)
+    if not trigger:
         return MulticorderSessionResult(
             status="failed",
-            message="Start phrase is not configured in podcast-phrase-gates.json.",
+            message="Start trigger phrase is not configured in podcast-phrase-gates.json.",
         )
 
     try:
@@ -292,7 +328,14 @@ def run_multicorder_session(    *,
             message=f"Failed to prepare MultiCorder recording: {exc}",
         )
 
-    print_fn(build_recording_message(start_phrase=start_phrase, end_phrases=end_phrases))
+    print_fn(
+        build_recording_message(
+            trigger_phrase=trigger,
+            end_phrases=end_phrases,
+            countdown_tokens=countdown or None,
+            allow_in=allow_in,
+        )
+    )
     print_fn("")
 
     if auto_continue:

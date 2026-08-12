@@ -17,6 +17,7 @@ from app.controller.preflight import run_preflight
 from app.controller.resume_router import resume_screen_for
 from app.controller.prep_progress import prep_needs_resume, read_prep_progress
 from app.controller.failure_info import read_failure_info, retry_screen_for_failure
+from app.controller.flag_report import load_flag_report_text
 from app.controller.render_progress import read_render_progress
 from app.controller.session_store import (
     existing_state_conflict,
@@ -94,6 +95,24 @@ class PrepProgressTests(unittest.TestCase):
             progress = read_prep_progress(state, folder, now=now)
             self.assertEqual(progress.step_started_display, "12:31 PM")
             self.assertEqual(progress.step_eta_display, "Est. about 50 min remaining for this step")
+
+    def test_fast_preview_tracks_p_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            state = {
+                "resume_at": "06p_conversation_sync",
+                "steps": {
+                    "06p_conversation_sync": {"status": "completed"},
+                    "07p_deroom_placeholder": {"status": "completed"},
+                    "08p_video_sync": {"status": "completed"},
+                    "09p_transcribe": {"status": "completed"},
+                },
+            }
+            progress = read_prep_progress(state, folder)
+            self.assertEqual(progress.current_step, "10p_fast_preview_one_min")
+            self.assertIn("1-minute", progress.current_label)
+            self.assertTrue(progress.step_lines[0].startswith("✓"))
+            self.assertTrue(progress.step_lines[-1].startswith("→"))
 
 
 class SessionNameTests(unittest.TestCase):
@@ -311,9 +330,48 @@ class RenderProgressTests(unittest.TestCase):
             }
             progress = read_render_progress(state, folder, now=now)
             self.assertFalse(progress.render_complete)
+            self.assertEqual(progress.current_step, "13_full_render")
+            self.assertTrue(progress.step_lines[0].startswith("→"))
             self.assertIn("Rendering full interview", progress.step_lines[0])
             self.assertEqual(progress.step_started_display, "3:00 PM")
             self.assertIn("remaining", progress.step_eta_display or "")
+
+    def test_render_advances_past_completed_encode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            state = {
+                "resume_at": "13_full_render",
+                "steps": {
+                    "13_full_render": {"status": "completed"},
+                    "13_output_transcripts": {"status": "in_progress"},
+                },
+            }
+            progress = read_render_progress(state, folder)
+            self.assertEqual(progress.current_step, "13_output_transcripts")
+            self.assertTrue(progress.step_lines[0].startswith("✓"))
+            self.assertTrue(any(line.startswith("→") and "transcript" in line.lower() for line in progress.step_lines))
+
+    def test_chained_full_after_preview_uses_render_phases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            state = {
+                "resume_at": "13_full_render",
+                "fast_preview_approval": {"approved_at": "2026-08-11T12:00:00+00:00"},
+                "steps": {
+                    "06_conversation_sync": {"status": "completed"},
+                    "07_deroom_placeholder": {"status": "completed"},
+                    "08_video_sync": {"status": "completed"},
+                    "09_transcribe": {"status": "completed"},
+                    "10_one_min_test": {"status": "skipped"},
+                    "13_full_render": {"status": "in_progress"},
+                },
+            }
+            progress = read_prep_progress(state, folder)
+            self.assertEqual(progress.current_step, "13_full_render")
+            self.assertIn("Rendering full interview", progress.current_label)
+            self.assertTrue(any("Fast Preview" in line for line in progress.step_lines))
+            self.assertFalse(any("→ Rendering 1-minute preview" == line for line in progress.step_lines))
+            self.assertTrue(any(line.startswith("→") and "full interview" in line for line in progress.step_lines))
 
 
 class FailureInfoTests(unittest.TestCase):
@@ -431,6 +489,49 @@ class SessionStoreTests(unittest.TestCase):
             conflict = existing_state_conflict(folder)
             self.assertIsNotNone(conflict)
             self.assertIn("Cursor", conflict)
+
+
+class FlagReportTests(unittest.TestCase):
+    def test_prefers_flag_report_from_state(self) -> None:
+        state = {
+            "flag_timestamps": {
+                "flag_report": (
+                    "Flags Dropped At These Timestamps:\n00:01:02\n\n"
+                    "Pause Flags At These Timestamps:\n00:03:04"
+                )
+            }
+        }
+        text = load_flag_report_text(state)
+        self.assertIn("00:01:02", text)
+        self.assertIn("00:03:04", text)
+
+    def test_builds_report_from_hhmmss_lists(self) -> None:
+        state = {
+            "flag_timestamps": {
+                "flag_timestamps_hhmmss": ["00:10:00"],
+                "pause_flag_timestamps_hhmmss": [],
+            }
+        }
+        text = load_flag_report_text(state)
+        self.assertIn("Flags Dropped At These Timestamps:", text)
+        self.assertIn("00:10:00", text)
+        self.assertIn("Pause Flags At These Timestamps:", text)
+        self.assertIn("-none-", text)
+
+    def test_reads_temp_file_when_state_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            temp = folder / "Temp"
+            temp.mkdir()
+            report = temp / "interview-flag-timestamps.txt"
+            report.write_text(
+                "Flags Dropped At These Timestamps:\n00:05:00\n\n"
+                "Pause Flags At These Timestamps:\n-none-",
+                encoding="utf-8",
+            )
+            state = {"paths": {"temp": str(temp)}}
+            text = load_flag_report_text(state, working_folder=folder)
+            self.assertIn("00:05:00", text)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,9 @@ class ProcessingScreen(ScreenWidget):
         layout.setSpacing(12)
 
         layout.addWidget(heading_label("Processing…"))
+        self._phase = body_label("")
+        self._phase.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        layout.addWidget(self._phase)
         self._timing = body_label("")
         self._timing.setStyleSheet("color: #94a3b8; font-size: 12px;")
         layout.addWidget(self._timing)
@@ -110,8 +113,14 @@ class ProcessingScreen(ScreenWidget):
             return
 
         progress = self.controller.read_prep_progress(folder)
+        if progress.resume_at == "14_done":
+            self.navigate.emit("F5")
+            return
         if progress.prep_complete:
-            self.navigate.emit("F2")
+            if progress.resume_at == "10a_sync_offset_approval":
+                self.navigate.emit("F2a")
+            else:
+                self.navigate.emit("F2")
             return
 
         existing = self.controller.find_running_prep_job(folder)
@@ -127,6 +136,30 @@ class ProcessingScreen(ScreenWidget):
         self._poll.stop()
         super().hideEvent(event)
 
+    def _start_processing_job(
+        self,
+        folder: Path,
+        state: dict,
+        *,
+        allow_overwrite: bool,
+        resume: bool,
+    ):
+        if self.controller.full_after_preview_pending(state):
+            return self.controller.start_full_after_preview(
+                folder,
+                allow_overwrite=allow_overwrite,
+            )
+        if self.controller.should_start_fast_preview(state):
+            return self.controller.start_fast_preview(
+                folder,
+                allow_overwrite=allow_overwrite,
+            )
+        return self.controller.start_prep(
+            folder,
+            allow_overwrite=allow_overwrite,
+            resume=resume,
+        )
+
     def _start_prep(self) -> None:
         folder = _session_folder(self)
         if folder is None or self._starting:
@@ -140,6 +173,13 @@ class ProcessingScreen(ScreenWidget):
             self._detail.setText(str(exc))
             return
 
+        if self.controller.full_after_preview_pending(state):
+            self._phase.setText("Full interview processing (prep + render)")
+        elif self.controller.should_start_fast_preview(state):
+            self._phase.setText("Fast Preview (first 5 minutes of source media)")
+        else:
+            self._phase.setText("")
+
         resume = prep_needs_resume(state, folder)
         allow_overwrite = ctx.allow_overwrite if ctx is not None else False
 
@@ -151,8 +191,9 @@ class ProcessingScreen(ScreenWidget):
         clear_prep_failure(folder)
 
         try:
-            job = self.controller.start_prep(
+            job = self._start_processing_job(
                 folder,
+                state,
                 allow_overwrite=allow_overwrite,
                 resume=resume,
             )
@@ -236,6 +277,14 @@ class ProcessingScreen(ScreenWidget):
         self._refresh_ui(folder)
 
     def _handle_prep_finished(self, folder: Path) -> None:
+        try:
+            state = self.controller.load_session_state(folder)
+        except Exception:
+            state = {}
+        if state.get("resume_at") == "14_done":
+            self.navigate.emit("F5")
+            return
+
         progress = self.controller.read_prep_progress(folder)
         if progress.prep_complete:
             if progress.resume_at == "10a_sync_offset_approval":
@@ -315,6 +364,11 @@ class ProcessingScreen(ScreenWidget):
                     else None,
                 )
                 return
+
+        if progress.resume_at == "14_done":
+            self._poll.stop()
+            self.navigate.emit("F5")
+            return
 
         if progress.prep_complete:
             self._poll.stop()

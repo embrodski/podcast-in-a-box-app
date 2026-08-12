@@ -47,6 +47,33 @@ class EncoderFallbackTests(unittest.TestCase):
         self.assertIn("h264_nvenc", run.call_args_list[0].args[0])
         self.assertIn("libx264", run.call_args_list[1].args[0])
 
+    def test_loudnorm_pass2_in_filter_complex(self) -> None:
+        from harness_loudnorm import LoudnormMeasurement
+
+        measured = LoudnormMeasurement(
+            input_i=-20.0,
+            input_tp=-3.0,
+            input_lra=8.0,
+            input_thresh=-30.0,
+            target_offset=6.0,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(multicam, "_run") as run:
+                multicam._trim_av_reencode(
+                    Path(td) / "input.mp4",
+                    Path(td) / "output.mp4",
+                    trim_sec=0.25,
+                    crf=20,
+                    audio_bitrate="192k",
+                    downscale_1080p=False,
+                    video_encoder="libx264",
+                    loudnorm_measured=measured,
+                )
+        fc = run.call_args.args[0][run.call_args.args[0].index("-filter_complex") + 1]
+        self.assertIn("loudnorm", fc)
+        self.assertIn("measured_I=-20.00", fc)
+        self.assertIn("atrim=start=0.25", fc)
+
     def test_libx264_failure_does_not_retry(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             with patch.object(

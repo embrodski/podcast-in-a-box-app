@@ -111,3 +111,10 @@ class ShortenJoinCommand(DSLCommand):
             f"ShortenJoinCommand(padding={self.padding_ms}ms, "
             f"crossfade={self.crossfade_ms}ms)"
         )
+
+
+class PauseFlagCommand(DSLCommand):
+    """Marker for a pause-seam resume point in the final edit (reporting only)."""
+
+    def __repr__(self):
+        return "PauseFlagCommand()"

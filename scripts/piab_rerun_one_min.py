@@ -25,6 +25,18 @@ def rerun_one_min_test(working_folder: Path, *, allow_overwrite: bool = False) -
     """Reconvert transcript, regenerate DSL, and render 1 Min Test from existing Input."""
     working = working_folder.resolve()
     state = load_piab_state(working)
+    if state.get("fast_preview_active") or (state.get("fast_preview") or {}).get("clips"):
+        from piab_fast_preview_lib import apply_preview_paths_to_state, render_preview_one_min_test
+
+        if not state.get("fast_preview_active"):
+            apply_preview_paths_to_state(state, working)
+        out_mp4, _mode, _sync_ab = render_preview_one_min_test(
+            state,
+            working,
+            allow_overwrite=allow_overwrite,
+        )
+        return out_mp4
+
     temp = Path(state["paths"]["temp"])
     output_dir = Path(state["paths"]["output"])
     ben, guest, wide = pick_interview_videos(state["main_prepped"]["prepped_videos"])
@@ -83,7 +95,19 @@ def rerun_one_min_test(working_folder: Path, *, allow_overwrite: bool = False) -
         sync_flag = {"failed": True}
 
     if sync_flag:
-        ab_result = run_sync_ab_one_min_tests(state, allow_overwrite=allow_overwrite)
+        from piab_fast_preview_lib import PREVIEW_ONE_MIN_FORCED_OFFSET, PREVIEW_ONE_MIN_NO_OFFSET
+
+        ab_kwargs = {}
+        if state.get("fast_preview_active"):
+            ab_kwargs = {
+                "one_min_no_offset_name": PREVIEW_ONE_MIN_NO_OFFSET,
+                "one_min_forced_offset_name": PREVIEW_ONE_MIN_FORCED_OFFSET,
+            }
+        ab_result = run_sync_ab_one_min_tests(
+            state,
+            allow_overwrite=allow_overwrite,
+            **ab_kwargs,
+        )
         mark_piab_sync_ab_steps(state, ab_result=ab_result)
         out_mp4 = Path(ab_result["one_min_no_offset"])
     else:

@@ -338,6 +338,8 @@ python scripts/piab_swap.py "E:\PodcastRoom\<name>" --files video   # or audio |
 
 ### Step 5 — Prep through 1-min test
 
+**Fast Preview** (max labeled **video** duration **> 10 min**): 300s head clips under `Preview Files/` → fast prep → F2/F2a → full prep + render (no second 1-min review). CLI: `piab_create_preview_clips.py`, `piab_run_fast_preview.py`, `piab_approve_fast_preview.py`, `piab_run_full_after_preview.py`. See **`docs/piab-fast-preview.md`**.
+
 Long job — only after Estimate A approval:
 
 ```powershell

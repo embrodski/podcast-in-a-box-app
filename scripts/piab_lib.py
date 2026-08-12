@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import wave
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -995,6 +996,7 @@ def move_labeled_media(
     video_labels: dict[str, str],
     audio_labels: dict[str, str],
     allow_overwrite: bool = False,
+    on_copy: Callable[[Path, Path, int, int, str], None] | None = None,
 ) -> dict:
     """Copy labeled sources into Raw with standard names. Source files are never moved."""
     from harness_overwrite_guard import refuse_overwrite
@@ -1006,24 +1008,14 @@ def move_labeled_media(
     original_paths: dict[str, str] = {}
     copied: dict[str, str] = {}
 
-    def _copy_labeled_source(src: Path, dest: Path) -> None:
-        if src.resolve() == dest.resolve():
-            return
-        refuse_overwrite(dest, allow_overwrite=allow_overwrite)
-        if dest.exists():
-            dest.unlink()
-        shutil.copy2(src, dest)
-
+    planned: list[tuple[Path, Path]] = []
     for src_str, role in video_labels.items():
         if role == "do_not_use":
             continue
         src = Path(src_str)
         if not src.is_file():
             raise FileNotFoundError(f"Labeled video missing: {src}")
-        dest = raw / role_to_video_name(role)
-        _copy_labeled_source(src, dest)
-        original_paths[dest.name] = str(src.resolve())
-        copied[role] = str(dest.resolve())
+        planned.append((src, raw / role_to_video_name(role)))
 
     for src_str, role in audio_labels.items():
         if role == "do_not_use":
@@ -1031,8 +1023,44 @@ def move_labeled_media(
         src = Path(src_str)
         if not src.is_file():
             raise FileNotFoundError(f"Labeled audio missing: {src}")
+        planned.append((src, raw / role_to_audio_name(role)))
+
+    total = len(planned)
+
+    def _copy_labeled_source(src: Path, dest: Path, *, index: int) -> None:
+        if src.resolve() == dest.resolve():
+            if on_copy:
+                on_copy(src, dest, index, total, "skipped")
+            return
+        if on_copy:
+            on_copy(src, dest, index, total, "start")
+        refuse_overwrite(dest, allow_overwrite=allow_overwrite)
+        if dest.exists():
+            dest.unlink()
+        shutil.copy2(src, dest)
+        if on_copy:
+            on_copy(src, dest, index, total, "done")
+
+    video_index = 0
+    for src_str, role in video_labels.items():
+        if role == "do_not_use":
+            continue
+        src = Path(src_str)
+        dest = raw / role_to_video_name(role)
+        video_index += 1
+        _copy_labeled_source(src, dest, index=video_index)
+        original_paths[dest.name] = str(src.resolve())
+        copied[role] = str(dest.resolve())
+
+    audio_base = video_index
+    audio_i = 0
+    for src_str, role in audio_labels.items():
+        if role == "do_not_use":
+            continue
+        src = Path(src_str)
         dest = raw / role_to_audio_name(role)
-        _copy_labeled_source(src, dest)
+        audio_i += 1
+        _copy_labeled_source(src, dest, index=audio_base + audio_i)
         original_paths[dest.name] = str(src.resolve())
         copied[role + "_audio"] = str(dest.resolve())
 

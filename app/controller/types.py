@@ -8,7 +8,7 @@ from typing import Literal
 
 BlockKind = Literal["recording", "autocut", "delivery"]
 CheckStatus = Literal["ok", "warn", "fail"]
-JobKind = Literal["recording", "prep", "render"]
+JobKind = Literal["recording", "prep", "render", "fast_preview", "full_after_preview"]
 JobStatus = Literal["running", "completed", "failed", "aborted"]
 
 

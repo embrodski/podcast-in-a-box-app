@@ -47,6 +47,14 @@ from app.controller.sync_offset import (
     resolve_ab_test_paths,
 )
 from app.controller.failure_info import FailureInfo, read_failure_info
+from app.controller.fast_preview import (
+    approve_fast_preview,
+    clear_preview_for_relabel,
+    fast_preview_eligible_for_state,
+    fast_preview_review_pending,
+    full_after_preview_pending,
+    should_start_fast_preview,
+)
 
 
 class PiabController:
@@ -112,6 +120,13 @@ class PiabController:
     def load_session_state(self, working_folder: Path) -> dict:
         return load_session_state(working_folder.resolve())
 
+    def load_flag_report_text(self, working_folder: Path) -> str:
+        from app.controller.flag_report import load_flag_report_text
+
+        folder = working_folder.resolve()
+        state = load_session_state(folder)
+        return load_flag_report_text(state, working_folder=folder)
+
     def read_prep_progress(
         self,
         working_folder: Path,
@@ -125,7 +140,7 @@ class PiabController:
     def find_running_prep_job(self, working_folder: Path):
         folder = working_folder.resolve()
         for job in self.jobs.list_jobs():
-            if job.kind != "prep" or job.status != "running":
+            if job.kind not in ("prep", "fast_preview", "full_after_preview") or job.status != "running":
                 continue
             if job.session_folder and job.session_folder.resolve() == folder:
                 return job
@@ -201,12 +216,14 @@ class PiabController:
         video_labels: dict[str, str],
         audio_labels: dict[str, str],
         allow_overwrite: bool = False,
+        on_copy=None,
     ) -> dict:
         return apply_labels(
             working_folder,
             video_labels=video_labels,
             audio_labels=audio_labels,
             allow_overwrite=allow_overwrite,
+            on_copy=on_copy,
         )
 
     def validate_video_labels(self, labels: dict[str, str]) -> None:
@@ -461,6 +478,62 @@ class PiabController:
             return folder.resolve()
         return working_folder.resolve()
 
+    def fast_preview_eligible(self, state: dict) -> bool:
+        return fast_preview_eligible_for_state(state)
+
+    def should_start_fast_preview(self, state: dict) -> bool:
+        return should_start_fast_preview(state)
+
+    def fast_preview_review_pending(self, state: dict) -> bool:
+        return fast_preview_review_pending(state)
+
+    def full_after_preview_pending(self, state: dict) -> bool:
+        return full_after_preview_pending(state)
+
+    def start_fast_preview(
+        self,
+        working_folder: Path,
+        *,
+        allow_overwrite: bool = False,
+    ) -> Job:
+        args = [str(working_folder.resolve())]
+        if allow_overwrite:
+            args.append("--allow-overwrite")
+        job = self.jobs.start_script(
+            "fast_preview",
+            self.scripts_dir / "piab_run_fast_preview.py",
+            args,
+            cwd=self.repo_root,
+            session_folder=working_folder.resolve(),
+        )
+        self.lock.add_processing_job(job.id)
+        return job
+
+    def start_full_after_preview(
+        self,
+        working_folder: Path,
+        *,
+        allow_overwrite: bool = False,
+    ) -> Job:
+        args = [str(working_folder.resolve())]
+        if allow_overwrite:
+            args.append("--allow-overwrite")
+        job = self.jobs.start_script(
+            "full_after_preview",
+            self.scripts_dir / "piab_run_full_after_preview.py",
+            args,
+            cwd=self.repo_root,
+            session_folder=working_folder.resolve(),
+        )
+        self.lock.add_processing_job(job.id)
+        return job
+
+    def approve_fast_preview(self, working_folder: Path) -> dict:
+        return approve_fast_preview(working_folder)
+
+    def clear_preview_for_relabel(self, working_folder: Path) -> dict:
+        return clear_preview_for_relabel(working_folder)
+
     def start_prep(
         self,
         working_folder: Path,
@@ -532,7 +605,7 @@ class PiabController:
     def poll_jobs(self) -> list[Job]:
         finished = self.jobs.poll()
         for job in finished:
-            if job.kind in {"prep", "render"}:
+            if job.kind in {"prep", "render", "fast_preview", "full_after_preview"}:
                 self.lock.remove_processing_job(job.id)
         return finished
 

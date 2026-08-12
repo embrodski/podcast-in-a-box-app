@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.controller.prep_progress import PREP_STEP_ORDER, read_prep_failure
-from app.controller.render_progress import RENDER_STEP_ID
+from app.controller.prep_progress import (
+    FAST_PREVIEW_STEP_ORDER,
+    PREP_STEP_ORDER,
+    read_prep_failure,
+)
+from app.controller.render_progress import RENDER_PHASE_ORDER, RENDER_STEP_ID
 from app.controller.resume_router import resume_screen_for
 
 
@@ -39,14 +43,22 @@ def retry_screen_for_failure(
     if failure:
         pipeline = str(failure.get("pipeline") or "")
         step_id = str(failure.get("step_id") or "")
-        if pipeline == "piab_full_render" or step_id == RENDER_STEP_ID:
+        if pipeline == "piab_full_render" or step_id == RENDER_STEP_ID or step_id in RENDER_PHASE_ORDER:
             return "F4"
-        if pipeline == "piab_prep" or step_id in PREP_STEP_ORDER:
+        if (
+            pipeline in {"piab_prep", "piab_fast_preview", "piab_full_after_preview"}
+            or step_id in PREP_STEP_ORDER
+            or step_id in FAST_PREVIEW_STEP_ORDER
+        ):
             return "E1"
 
-    if resume_at == "12_estimate_full" or resume_at == RENDER_STEP_ID:
+    if resume_at == "12_estimate_full" or resume_at == RENDER_STEP_ID or (
+        isinstance(resume_at, str) and resume_at in RENDER_PHASE_ORDER
+    ):
         return "F4"
-    if isinstance(resume_at, str) and resume_at in PREP_STEP_ORDER:
+    if isinstance(resume_at, str) and (
+        resume_at in PREP_STEP_ORDER or resume_at in FAST_PREVIEW_STEP_ORDER
+    ):
         return "E1"
     screen = resume_screen_for(resume_at)
     if screen in {"E1", "F4", "F3", "F2"}:

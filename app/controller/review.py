@@ -10,6 +10,13 @@ from app.controller.paths import REPO_ROOT, SCRIPTS_DIR, ensure_scripts_path
 
 
 def resolve_one_min_test_path(state: dict, working_folder: Path) -> Path:
+    ensure_scripts_path()
+    from piab_fast_preview_lib import resolve_preview_one_min_path
+    from app.controller.fast_preview import fast_preview_review_pending
+
+    if fast_preview_review_pending(state):
+        return resolve_preview_one_min_path(state, working_folder)
+
     raw = state.get("podcast_autocut_test_mp4")
     if raw:
         path = Path(str(raw))
@@ -42,9 +49,15 @@ def approve_one_min_test(working_folder: Path) -> dict:
     """Mark 1-min approval complete and refresh Estimate B in session state."""
     folder = working_folder.resolve()
     ensure_scripts_path()
+    from app.controller.fast_preview import fast_preview_review_pending
     from piab_lib import load_piab_state, mark_step, save_piab_state
 
     state = load_piab_state(folder)
+    if fast_preview_review_pending(state):
+        from app.controller.fast_preview import approve_fast_preview as _approve_fp
+
+        return _approve_fp(folder)
+
     mark_step(
         state,
         "11_one_min_approval",

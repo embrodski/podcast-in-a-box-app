@@ -30,6 +30,17 @@ class FlagHit:
     segment_num: str
 
 
+@dataclass(frozen=True)
+class FlagMarker:
+    """A marker on the final edit timeline."""
+
+    output_sec: float
+    kind: str  # "flag" | "pause_flag"
+
+
+PAUSE_FLAG_LABEL = "Pause Flag"
+
+
 def flag_phrases_from_gates_or_defaults(gates: dict[str, Any] | None = None) -> list[str]:
     phrases = flag_phrases_from_gates(gates or load_phrase_gates())
     return phrases
@@ -164,8 +175,104 @@ def format_flag_timestamp_report(output_times_sec: Sequence[float]) -> str:
     return "\n".join(lines)
 
 
-def print_flag_timestamp_report(output_times_sec: Sequence[float]) -> None:
-    print(format_flag_timestamp_report(output_times_sec), flush=True)
+def format_pause_flag_timestamp_report(output_times_sec: Sequence[float]) -> str:
+    lines = [f"{PAUSE_FLAG_LABEL}s At These Timestamps:"]
+    if not output_times_sec:
+        lines.append("-none-")
+    else:
+        for t in sorted(float(x) for x in output_times_sec):
+            lines.append(format_hhmmss(t))
+    return "\n".join(lines)
+
+
+def format_combined_flag_report(
+    spoken_times_sec: Sequence[float],
+    pause_times_sec: Sequence[float],
+) -> str:
+    parts = [
+        format_flag_timestamp_report(spoken_times_sec),
+        "",
+        format_pause_flag_timestamp_report(pause_times_sec),
+    ]
+    return "\n".join(parts)
+
+
+FLAG_REPORT_FILENAME = "interview-flag-timestamps.txt"
+
+
+def _flag_report_section_lines(title: str, hhmmss_times: list[str]) -> list[str]:
+    lines = [title]
+    if hhmmss_times:
+        lines.extend(sorted(str(t) for t in hhmmss_times))
+    else:
+        lines.append("-none-")
+    return lines
+
+
+def flag_report_from_state(state: dict) -> str | None:
+    """Return combined flag report text stored on the session, if any."""
+    flags = state.get("flag_timestamps")
+    if not isinstance(flags, dict):
+        return None
+
+    report = flags.get("flag_report")
+    if isinstance(report, str) and report.strip():
+        return report.strip()
+
+    spoken = flags.get("flag_timestamps_hhmmss")
+    pause = flags.get("pause_flag_timestamps_hhmmss")
+    if not isinstance(spoken, list) and not isinstance(pause, list):
+        return None
+
+    spoken_list = [str(t) for t in spoken] if isinstance(spoken, list) else []
+    pause_list = [str(t) for t in pause] if isinstance(pause, list) else []
+    parts = [
+        *_flag_report_section_lines("Flags Dropped At These Timestamps:", spoken_list),
+        "",
+        *_flag_report_section_lines("Pause Flags At These Timestamps:", pause_list),
+    ]
+    return "\n".join(parts)
+
+
+def load_flag_report_text(state: dict, *, working_folder: Path | None = None) -> str:
+    """
+    Return flag report text for display or email.
+
+    Prefers ``state['flag_timestamps']``, then ``Temp/interview-flag-timestamps.txt``.
+    """
+    from_state = flag_report_from_state(state)
+    if from_state:
+        return from_state
+
+    paths = state.get("paths")
+    file_path: Path | None = None
+    if isinstance(paths, dict) and paths.get("temp"):
+        candidate = Path(str(paths["temp"])) / FLAG_REPORT_FILENAME
+        if candidate.is_file():
+            file_path = candidate
+
+    if file_path is None and working_folder is not None:
+        candidate = working_folder / "Temp" / FLAG_REPORT_FILENAME
+        if candidate.is_file():
+            file_path = candidate
+
+    if file_path is not None:
+        return file_path.read_text(encoding="utf-8").strip()
+
+    return (
+        "Flags Dropped At These Timestamps:\n-none-\n\n"
+        "Pause Flags At These Timestamps:\n-none-"
+    )
+
+
+def print_flag_timestamp_report(
+    spoken_times_sec: Sequence[float],
+    pause_times_sec: Sequence[float] | None = None,
+) -> None:
+    if pause_times_sec is None:
+        print(format_flag_timestamp_report(spoken_times_sec), flush=True)
+        return
+    print(format_combined_flag_report(spoken_times_sec, pause_times_sec), flush=True)
 
 
 def _ensure_podcast_dsl_env(temp_dir: Path) -> None:
@@ -181,26 +288,27 @@ def _ensure_podcast_dsl_env(temp_dir: Path) -> None:
     load_segments_overlay(seg)
 
 
-def scan_dsl_flag_output_times(
+def scan_dsl_flag_markers(
     dsl_path: Path,
     temp_dir: Path,
     *,
     flag_phrases: Sequence[str] | None = None,
-) -> list[float]:
+) -> tuple[list[float], list[float]]:
     """
-    Walk segment lines in ``dsl_path`` and map flag phrase hits to output timeline seconds.
+    Walk segment lines in ``dsl_path`` and map markers to output timeline seconds.
+
+    Returns ``(spoken_flag_times, pause_flag_times)``.
     """
     from podcast_dsl.clip_processing import get_clip_info, load_transcript, parse_segment_id
     from podcast_dsl.commands import (
         CutCommand,
         OpeningPrerollCommand,
+        PauseFlagCommand,
         SegmentCommand,
     )
     from podcast_dsl.parser import parse_dsl_file
 
     phrases = list(flag_phrases or flag_phrases_from_gates_or_defaults())
-    if not phrases:
-        return []
 
     _ensure_podcast_dsl_env(temp_dir)
     commands = parse_dsl_file(str(dsl_path))
@@ -211,7 +319,8 @@ def scan_dsl_flag_output_times(
     current_camera = "speaker_0"
     cumulative = 0.0
     clip_index = 0
-    output_times: list[float] = []
+    spoken_times: list[float] = []
+    pause_times: list[float] = []
 
     for cmd in commands:
         if isinstance(cmd, CutCommand):
@@ -225,6 +334,9 @@ def scan_dsl_flag_output_times(
 
         if isinstance(cmd, CameraCommand):
             current_camera = cmd.camera_name
+            continue
+        if isinstance(cmd, PauseFlagCommand):
+            pause_times.append(cumulative)
             continue
         if not isinstance(cmd, SegmentCommand):
             continue
@@ -264,15 +376,30 @@ def scan_dsl_flag_output_times(
             t = float(hit.source_start_sec)
             if t + 1e-6 < playback_start or t > playback_end + 1e-6:
                 continue
-            output_times.append(cumulative + (t - playback_start))
+            spoken_times.append(cumulative + (t - playback_start))
 
         cumulative += duration
         cumulative += cut_after_ms / 1000.0
         clip_index += 1
 
-    # Stable order, allow multiple flags in the same second.
-    output_times.sort()
-    return output_times
+    spoken_times.sort()
+    pause_times.sort()
+    return spoken_times, pause_times
+
+
+def scan_dsl_flag_output_times(
+    dsl_path: Path,
+    temp_dir: Path,
+    *,
+    flag_phrases: Sequence[str] | None = None,
+) -> list[float]:
+    """Walk segment lines in ``dsl_path`` and map flag phrase hits to output timeline seconds."""
+    spoken_times, _pause_times = scan_dsl_flag_markers(
+        dsl_path,
+        temp_dir,
+        flag_phrases=flag_phrases,
+    )
+    return spoken_times
 
 
 def report_flag_timestamps_after_render(
@@ -288,9 +415,11 @@ def report_flag_timestamps_after_render(
     phrases = flag_phrases_from_gates_or_defaults(
         load_phrase_gates(state_overrides=state or {})
     )
-    times = scan_dsl_flag_output_times(dsl_path, temp_dir, flag_phrases=phrases)
-    report_text = format_flag_timestamp_report(times)
-    print_flag_timestamp_report(times)
+    spoken_times, pause_times = scan_dsl_flag_markers(
+        dsl_path, temp_dir, flag_phrases=phrases
+    )
+    report_text = format_combined_flag_report(spoken_times, pause_times)
+    print_flag_timestamp_report(spoken_times, pause_times)
 
     report_path: Path | None = None
     if write_report_file:
@@ -299,8 +428,10 @@ def report_flag_timestamps_after_render(
 
     return {
         "flag_phrases": phrases,
-        "flag_timestamps_sec": times,
-        "flag_timestamps_hhmmss": [format_hhmmss(t) for t in times],
+        "flag_timestamps_sec": spoken_times,
+        "flag_timestamps_hhmmss": [format_hhmmss(t) for t in spoken_times],
+        "pause_flag_timestamps_sec": pause_times,
+        "pause_flag_timestamps_hhmmss": [format_hhmmss(t) for t in pause_times],
         "flag_report": report_text,
         "flag_report_file": str(report_path) if report_path else None,
     }

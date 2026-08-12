@@ -73,8 +73,15 @@ class FrameioShareResult:
 
 @dataclass(frozen=True)
 class FrameioDeliveryResult:
-    upload: FrameioUploadResult
+    uploads: tuple[FrameioUploadResult, ...]
     share: FrameioShareResult
+
+    @property
+    def upload(self) -> FrameioUploadResult:
+        """Primary (first) uploaded file — usually the interview video."""
+        if not self.uploads:
+            raise RuntimeError("Frame.io delivery has no uploads.")
+        return self.uploads[0]
 
 
 def _api_request(
@@ -248,9 +255,11 @@ def poll_upload_complete(
 def create_public_share(
     config: FrameioConfig,
     *,
-    file_id: str,
+    asset_ids: list[str],
     share_name: str,
 ) -> FrameioShareResult:
+    if not asset_ids:
+        raise ValueError("Frame.io share requires at least one asset id.")
     url = (
         f"{FRAMEIO_API_BASE}/accounts/{config.account_id}/projects/"
         f"{config.project_id}/shares"
@@ -260,7 +269,7 @@ def create_public_share(
             "type": "asset",
             "access": "public",
             "name": share_name,
-            "asset_ids": [file_id],
+            "asset_ids": asset_ids,
             "expiration": None,
             "downloading_enabled": True,
         }
@@ -280,21 +289,21 @@ def create_public_share(
     )
 
 
-def upload_file_and_create_share(
+def upload_file_to_frameio(
     config: FrameioConfig,
-    *,
     file_path: Path,
-    share_name: str | None = None,
+    *,
     put_bytes: Callable[[str, bytes, dict[str, str]], None] | None = None,
     poll_interval_sec: float = 5.0,
     timeout_sec: float = 4 * 60 * 60,
     sleep_fn: Callable[[float], None] = time.sleep,
     monotonic_fn: Callable[[], float] = time.monotonic,
-) -> FrameioDeliveryResult:
+) -> FrameioUploadResult:
+    """Upload one local file to Frame.io and wait until processing completes."""
     file_path = file_path.resolve()
     created = create_local_upload(config, file_path=file_path)
     file_id = str(created.get("id") or "")
-    media_type = str(created.get("media_type") or "video/mp4")
+    media_type = str(created.get("media_type") or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream")
     upload_urls = created.get("upload_urls") or []
     if not file_id:
         raise RuntimeError("Frame.io local_upload response missing file id.")
@@ -314,16 +323,66 @@ def upload_file_and_create_share(
         sleep_fn=sleep_fn,
         monotonic_fn=monotonic_fn,
     )
+    return FrameioUploadResult(
+        file_id=file_id,
+        file_name=file_path.name,
+        media_type=media_type,
+    )
+
+
+def upload_files_and_create_share(
+    config: FrameioConfig,
+    *,
+    file_paths: list[Path],
+    share_name: str,
+    put_bytes: Callable[[str, bytes, dict[str, str]], None] | None = None,
+    poll_interval_sec: float = 5.0,
+    timeout_sec: float = 4 * 60 * 60,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> FrameioDeliveryResult:
+    """Upload multiple files and expose them in one public share."""
+    if not file_paths:
+        raise ValueError("No files to upload.")
+    uploads = tuple(
+        upload_file_to_frameio(
+            config,
+            path,
+            put_bytes=put_bytes,
+            poll_interval_sec=poll_interval_sec,
+            timeout_sec=timeout_sec,
+            sleep_fn=sleep_fn,
+            monotonic_fn=monotonic_fn,
+        )
+        for path in file_paths
+    )
     share = create_public_share(
         config,
-        file_id=file_id,
-        share_name=share_name or file_path.name,
+        asset_ids=[item.file_id for item in uploads],
+        share_name=share_name,
     )
-    return FrameioDeliveryResult(
-        upload=FrameioUploadResult(
-            file_id=file_id,
-            file_name=file_path.name,
-            media_type=media_type,
-        ),
-        share=share,
+    return FrameioDeliveryResult(uploads=uploads, share=share)
+
+
+def upload_file_and_create_share(
+    config: FrameioConfig,
+    *,
+    file_path: Path,
+    share_name: str | None = None,
+    put_bytes: Callable[[str, bytes, dict[str, str]], None] | None = None,
+    poll_interval_sec: float = 5.0,
+    timeout_sec: float = 4 * 60 * 60,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> FrameioDeliveryResult:
+    file_path = file_path.resolve()
+    return upload_files_and_create_share(
+        config,
+        file_paths=[file_path],
+        share_name=share_name or file_path.name,
+        put_bytes=put_bytes,
+        poll_interval_sec=poll_interval_sec,
+        timeout_sec=timeout_sec,
+        sleep_fn=sleep_fn,
+        monotonic_fn=monotonic_fn,
     )

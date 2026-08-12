@@ -100,6 +100,60 @@ class FrameioClientTests(unittest.TestCase):
         )
         self.assertEqual(mock_api.call_count, 2)
 
+    @patch("frameio_client.create_public_share")
+    @patch("frameio_client.poll_upload_complete")
+    @patch("frameio_client.upload_file_chunks")
+    @patch("frameio_client.create_local_upload")
+    def test_upload_files_and_create_share(
+        self,
+        mock_create,
+        mock_upload,
+        mock_poll,
+        mock_share,
+    ) -> None:
+        mock_create.side_effect = [
+            {
+                "id": "file-1",
+                "media_type": "video/mp4",
+                "upload_urls": [{"size": 4, "url": "https://upload.example/1"}],
+            },
+            {
+                "id": "file-2",
+                "media_type": "text/plain",
+                "upload_urls": [{"size": 4, "url": "https://upload.example/2"}],
+            },
+        ]
+        mock_share.return_value = type(
+            "Share",
+            (),
+            {"share_id": "share-1", "short_url": "https://f.io/abc", "name": "Test"},
+        )()
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "video.mp4"
+            transcript = Path(td) / "transcript.txt"
+            video.write_bytes(b"data")
+            transcript.write_bytes(b"txt")
+            config = FrameioConfig(
+                access_token="token",
+                account_id="acct",
+                project_id="proj",
+                upload_folder_id="folder",
+            )
+            from frameio_client import upload_files_and_create_share
+
+            result = upload_files_and_create_share(
+                config,
+                file_paths=[video, transcript],
+                share_name="Episode",
+            )
+            self.assertEqual(len(result.uploads), 2)
+            self.assertEqual(result.upload.file_id, "file-1")
+            self.assertEqual(result.share.short_url, "https://f.io/abc")
+            self.assertEqual(mock_upload.call_count, 2)
+            self.assertEqual(mock_poll.call_count, 2)
+            share_kwargs = mock_share.call_args.kwargs
+            self.assertEqual(share_kwargs["asset_ids"], ["file-1", "file-2"])
+
     @patch("frameio_client.poll_upload_complete")
     @patch("frameio_client.upload_file_chunks")
     @patch("frameio_client.create_local_upload")
@@ -133,10 +187,12 @@ class FrameioClientTests(unittest.TestCase):
             )
             result = upload_file_and_create_share(config, file_path=tmp_path)
             self.assertEqual(result.upload.file_id, "file-1")
+            self.assertEqual(len(result.uploads), 1)
             self.assertEqual(result.share.short_url, "https://f.io/abc")
             mock_upload.assert_called_once()
             mock_poll.assert_called_once()
             mock_share.assert_called_once()
+            self.assertEqual(mock_share.call_args.kwargs["asset_ids"], ["file-1"])
         finally:
             tmp_path.unlink(missing_ok=True)
 
