@@ -8,6 +8,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 ASSETS_DIR = REPO_ROOT / "assets"
+APP_DISPLAY_NAME = "Podcast in a Box"
+APP_ORGANIZATION_NAME = "Lighthaven"
+APP_USER_MODEL_ID = "Lighthaven.PodcastInABox"
+APP_ICON_ICO = ASSETS_DIR / "piab.ico"
 DEFAULT_SCAN_ROOT = Path(r"E:\PodcastRoom")
 DEFAULT_APP_HOME = DEFAULT_SCAN_ROOT / "PodcastInABox"
 DEFAULT_WORK_ROOT = DEFAULT_APP_HOME / "Sessions"

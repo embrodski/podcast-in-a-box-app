@@ -49,7 +49,15 @@ pip install -r requirements-app.txt
 python -m app.main
 ```
 
-Or double-click `run_piab_app.bat`.
+Or double-click `run_piab_app.bat` (keeps a console for errors).
+
+To add **Start Menu** and **Desktop** shortcuts (launches with `pythonw.exe`, no console, uses `assets/piab.ico`):
+
+```powershell
+python scripts/piab_install_shortcuts.py
+```
+
+Run that once after clone. Rebuild the icon with `python scripts/piab_build_app_icon.py` if the source PNG changes.
 
 ## Process log
 

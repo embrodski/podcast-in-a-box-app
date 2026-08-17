@@ -447,7 +447,7 @@ class PiabController:
 3. **PySide6 shell** — A0, A1, close protection, modals
 4. **Recording screens** — B1–B6
 5. **Autocut screens** — C*, D*, E*, F*
-6. **Packaging** — desktop shortcut / PyInstaller (later)
+6. **Packaging** — Desktop / Start Menu shortcuts via `scripts/piab_install_shortcuts.py` (done). PyInstaller exe (later)
 
 ---
 

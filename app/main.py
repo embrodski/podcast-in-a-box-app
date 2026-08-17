@@ -6,10 +6,16 @@ from __future__ import annotations
 import argparse
 import sys
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from app.controller import PiabController
-from app.controller.paths import ensure_scripts_path, migrate_legacy_work_files
+from app.controller.paths import (
+    APP_DISPLAY_NAME,
+    APP_ORGANIZATION_NAME,
+    ensure_scripts_path,
+    migrate_legacy_work_files,
+)
+from app.gui.app_icon import apply_application_icon, apply_process_app_user_model_id
 from app.gui.window_manager import WindowManager
 
 
@@ -38,9 +44,11 @@ def main(argv: list[str] | None = None) -> int:
         print(message, file=sys.stderr)
         return 1
 
+    apply_process_app_user_model_id()
     app = QApplication(sys.argv)
-    app.setApplicationName("Podcast in a Box")
-    app.setOrganizationName("Lighthaven")
+    app.setApplicationName(APP_DISPLAY_NAME)
+    app.setOrganizationName(APP_ORGANIZATION_NAME)
+    apply_application_icon(app)
 
     manager = WindowManager(controller)
     manager.start()
