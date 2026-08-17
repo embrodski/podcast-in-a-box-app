@@ -8,9 +8,11 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout
 
-from app.controller.prep_progress import clear_prep_failure, failure_summary, prep_needs_resume
-from app.gui.dialogs import confirm_action
+from app.controller.prep_progress import clear_prep_failure, failure_summary
+from app.controller.storage_gate import assess_prep_storage
+from app.gui.dialogs import confirm_action, confirm_hold_outside_queue
 from app.gui.failure_context import navigate_to_failure
+from app.gui.storage_prompts import gate_low_disk, maybe_offer_clean_on_disk_failure
 from app.gui.widgets.path_banner import PathBanner
 from app.gui.widgets.screen_base import ScreenWidget
 from app.gui.widgets.selectable_text import body_label, heading_label
@@ -72,6 +74,11 @@ class ProcessingScreen(ScreenWidget):
 
         row.addStretch()
 
+        self._hold = QPushButton("Hold Outside Queue")
+        self._hold.clicked.connect(self._confirm_hold)
+        self._hold.hide()
+        row.addWidget(self._hold)
+
         self._abort = QPushButton("Abort")
         self._abort.clicked.connect(self._confirm_abort)
         row.addWidget(self._abort)
@@ -90,6 +97,7 @@ class ProcessingScreen(ScreenWidget):
             self._detail.setText("Go back and create or open a session first.")
             self._banner.set_path(None)
             self._abort.hide()
+            self._hold.hide()
             self._retry.hide()
             self._home.show()
             return
@@ -97,6 +105,7 @@ class ProcessingScreen(ScreenWidget):
         self._banner.set_path(folder)
         self._home.hide()
         self._retry.hide()
+        self._hold.hide()
         self._abort.show()
         self._prep_job_id = None
         self._starting = False
@@ -109,12 +118,25 @@ class ProcessingScreen(ScreenWidget):
             self._current.setText("Could not read session state.")
             self._detail.setText(str(exc))
             self._abort.hide()
+            self._hold.hide()
             self._retry.show()
             return
 
         progress = self.controller.read_prep_progress(folder)
         if progress.resume_at == "14_done":
             self.navigate.emit("F5")
+            return
+        if self.controller.full_after_preview_pending(state):
+            window = self.window()
+            folder_ref = folder
+
+            def _handoff_final() -> None:
+                if hasattr(window, "handoff_to_final_render"):
+                    window.handoff_to_final_render(folder_ref)
+                    return
+                self.navigate.emit("F4")
+
+            QTimer.singleShot(0, _handoff_final)
             return
         if progress.prep_complete:
             if progress.resume_at == "10a_sync_offset_approval":
@@ -130,6 +152,11 @@ class ProcessingScreen(ScreenWidget):
             self._poll.start()
             return
 
+        entry = self.controller.job_queue.entry_for(folder, "fast_preview")
+        if entry is not None and entry.status == "held":
+            self._show_held_state()
+            return
+
         self._start_prep()
 
     def hideEvent(self, event) -> None:  # noqa: N802
@@ -142,27 +169,20 @@ class ProcessingScreen(ScreenWidget):
         state: dict,
         *,
         allow_overwrite: bool,
-        resume: bool,
+        resume: bool = False,
     ):
-        if self.controller.full_after_preview_pending(state):
-            return self.controller.start_full_after_preview(
-                folder,
-                allow_overwrite=allow_overwrite,
-            )
-        if self.controller.should_start_fast_preview(state):
-            return self.controller.start_fast_preview(
-                folder,
-                allow_overwrite=allow_overwrite,
-            )
-        return self.controller.start_prep(
+        return self.controller.request_fast_preview(
             folder,
             allow_overwrite=allow_overwrite,
-            resume=resume,
         )
 
     def _start_prep(self) -> None:
         folder = _session_folder(self)
         if folder is None or self._starting:
+            return
+        held = self.controller.job_queue.entry_for(folder, "fast_preview")
+        if held is not None and held.status == "held":
+            self._show_held_state()
             return
 
         ctx = self.context()
@@ -173,20 +193,25 @@ class ProcessingScreen(ScreenWidget):
             self._detail.setText(str(exc))
             return
 
-        if self.controller.full_after_preview_pending(state):
-            self._phase.setText("Full interview processing (prep + render)")
-        elif self.controller.should_start_fast_preview(state):
-            self._phase.setText("Fast Preview (first 5 minutes of source media)")
-        else:
-            self._phase.setText("")
+        assessment = assess_prep_storage(folder)
+        action = gate_low_disk(self, assessment, return_screen="E1")
+        if action == "go_clean":
+            return
+        if action == "abort":
+            self._current.setText("Prep not started — low disk space.")
+            self._detail.setText(assessment.message)
+            self._retry.show()
+            return
 
-        resume = prep_needs_resume(state, folder)
+        self._phase.setText("Fast Preview (short clips, then 1-minute review)")
+
         allow_overwrite = ctx.allow_overwrite if ctx is not None else False
 
         self._starting = True
         self._retry.hide()
+        self._hold.hide()
         self._abort.show()
-        self._current.setText("Starting prep…")
+        self._current.setText("Starting Fast Preview…")
         self._detail.setText("This may take a while. Do not close the app.")
         clear_prep_failure(folder)
 
@@ -195,7 +220,6 @@ class ProcessingScreen(ScreenWidget):
                 folder,
                 state,
                 allow_overwrite=allow_overwrite,
-                resume=resume,
             )
         except RuntimeError as exc:
             message = str(exc)
@@ -215,6 +239,7 @@ class ProcessingScreen(ScreenWidget):
                     summary="Prep blocked — files already exist.",
                     retry_screen="E1",
                     detail=message,
+                    report=False,
                 )
             else:
                 navigate_to_failure(
@@ -228,12 +253,63 @@ class ProcessingScreen(ScreenWidget):
         finally:
             self._starting = False
 
+        if job is None:
+            self._prep_job_id = None
+            self._show_queued_waiting()
+            self._poll.start()
+            return
+
         self._prep_job_id = job.id
         self._refresh_ui(folder)
         self._poll.start()
 
+    def _show_queued_waiting(self) -> None:
+        self._current.setText(
+            "This autocut job is in queue, and will be processed in the order it was received."
+        )
+        self._detail.setText("Fast Preview will start when the current preview job finishes.")
+        self._hold.show()
+        self._abort.show()
+
+    def _show_held_state(self) -> None:
+        self._poll.stop()
+        self._current.setText("This job is on hold and will not start automatically.")
+        self._detail.setText("Use Resume on the Home On hold list, or Resume session, to restart it.")
+        self._hold.hide()
+        self._abort.hide()
+        self._home.show()
+
+    def _confirm_hold(self) -> None:
+        folder = _session_folder(self)
+        if folder is None or self._prep_job_id is not None:
+            return
+        if not confirm_hold_outside_queue(self):
+            return
+        self.controller.hold_queued_job(folder, "fast_preview")
+        self._poll.stop()
+        window = self.window()
+        if hasattr(window, "close_flow_to_home"):
+            window.close_flow_to_home()
+            return
+        self.navigate.emit("A1")
+
     def _confirm_abort(self) -> None:
+        folder = _session_folder(self)
         if self._prep_job_id is None:
+            if folder is None:
+                return
+            if not confirm_action(
+                self,
+                title="Remove from queue?",
+                text=(
+                    "This will cancel the autocut completely, and remove this job "
+                    "from the queue. Your video and audio files will remain untouched "
+                    "where they are."
+                ),
+            ):
+                return
+            self.controller.cancel_queued_job(folder, "fast_preview")
+            self.navigate.emit("A1")
             return
         if not confirm_action(
             self,
@@ -260,6 +336,16 @@ class ProcessingScreen(ScreenWidget):
         folder = _session_folder(self)
         if folder is None:
             return
+
+        if self._prep_job_id is None:
+            existing = self.controller.find_running_prep_job(folder)
+            if existing is not None:
+                self._prep_job_id = existing.id
+                self._hold.hide()
+                self._current.setText("Starting Fast Preview…")
+            else:
+                self._show_queued_waiting()
+                return
 
         finished = self.controller.poll_jobs()
         for job in finished:
@@ -316,7 +402,7 @@ class ProcessingScreen(ScreenWidget):
         fallback = message or "Prep failed."
         summary = self._prep_failure_summary(folder, progress.failure, fallback)
         file_detail = progress.failure.get("error_detail") if progress.failure else None
-        navigate_to_failure(
+        maybe_offer_clean_on_disk_failure(
             self,
             summary=summary,
             retry_screen="E1",
@@ -355,7 +441,7 @@ class ProcessingScreen(ScreenWidget):
             summary = self._prep_failure_summary(folder, progress.failure, "Prep failed.")
             if summary:
                 self._poll.stop()
-                navigate_to_failure(
+                maybe_offer_clean_on_disk_failure(
                     self,
                     summary=summary,
                     retry_screen="E1",

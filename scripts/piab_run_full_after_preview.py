@@ -27,9 +27,14 @@ from harness_transcribe_prepped import _run_transcribe
 from harness_av_sync_lib import (
     SYNC_CHOICE_FORCED_OFFSET,
     prep_video_sync_variant,
+    write_canonical_main_segments,
 )
 from harness_video_sync import find_scope_videos, run_video_sync
-from piab_fast_preview_lib import apply_fast_preview_approval_to_state
+from piab_fast_preview_lib import (
+    apply_fast_preview_approval_to_state,
+    is_short_source_state,
+    promote_short_source_preview_to_canonical,
+)
 from piab_lib import load_piab_state, mark_step, print_json, save_piab_state
 
 
@@ -82,6 +87,10 @@ def run_full_prep_after_preview(
     working = working.resolve()
     state = load_piab_state(working)
     apply_fast_preview_approval_to_state(state)
+    if is_short_source_state(state):
+        return promote_short_source_preview_to_canonical(
+            working, allow_overwrite=allow_overwrite
+        )
 
     raw = Path(state["paths"]["raw"])
     input_dir = Path(state["paths"]["input"])
@@ -181,6 +190,7 @@ def run_full_prep_after_preview(
         from_fast_preview=True,
     )
     state["resume_at"] = "13_full_render"
+    write_canonical_main_segments(state)
     save_piab_state(working, state)
 
     return {

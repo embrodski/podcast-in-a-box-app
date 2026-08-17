@@ -9,8 +9,8 @@ import sys
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.controller import PiabController
-from app.controller.paths import ensure_scripts_path
-from app.gui import MainWindow
+from app.controller.paths import ensure_scripts_path, migrate_legacy_work_files
+from app.gui.window_manager import WindowManager
 
 
 def _load_secrets() -> None:
@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _load_secrets()
+    migrate_legacy_work_files()
 
     controller = PiabController()
     ok, message = controller.acquire_app_lock(force=args.force_lock)
@@ -41,8 +42,8 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("Podcast in a Box")
     app.setOrganizationName("Lighthaven")
 
-    window = MainWindow(controller)
-    window.show()
+    manager = WindowManager(controller)
+    manager.start()
 
     code = app.exec()
     controller.release_app_lock()

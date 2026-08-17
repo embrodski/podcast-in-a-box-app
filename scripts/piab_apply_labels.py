@@ -80,8 +80,7 @@ def apply_labeled_media_session(
         max_video = max_raw_video_duration_sec(raw)
         state["max_video_duration_sec"] = max_video
         state["fast_preview_eligible"] = fast_preview_eligible(raw)
-        if state["fast_preview_eligible"]:
-            state["estimate_prep_fast"] = estimate_fast_preview_prep()
+        state["estimate_prep_fast"] = estimate_fast_preview_prep()
     except FileNotFoundError:
         state["fast_preview_eligible"] = False
     mark_step(

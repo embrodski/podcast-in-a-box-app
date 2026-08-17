@@ -24,6 +24,8 @@ from harness_episode_lib import (
 )
 
 DEFAULT_SCAN_ROOT = Path(r"E:\PodcastRoom")
+DEFAULT_APP_HOME = DEFAULT_SCAN_ROOT / "PodcastInABox"
+DEFAULT_WORK_ROOT = DEFAULT_APP_HOME / "Sessions"
 
 VIDEO_NAME_RE = re.compile(
     r"^MultiCorder\d+\s*-\s*DeckLink",
@@ -309,12 +311,14 @@ def resolve_init_layout(
     root: Path,
     name: str | None,
     working_folder: Path | None,
+    scan_root: Path | None = None,
 ) -> tuple[Path, Path, str, str]:
     """
     Return ``(working_folder, scan_dir, session_name, session_mode)``.
 
     ``session_mode`` is ``default`` (new subfolder under ``root``) or ``special``
-    (sources live inside the given working folder).
+    (sources live inside the given working folder). MultiCorder dumps are
+    scanned from ``scan_root`` (default: ``DEFAULT_SCAN_ROOT``).
     """
     root = root.resolve()
 
@@ -336,7 +340,8 @@ def resolve_init_layout(
     working = (root / session_name).resolve()
     if working.parent != root:
         raise ValueError("--name must be a single folder name, not a path.")
-    scan_dir = resolve_scan_dir(root=root, working=working)
+    dump_root = (scan_root or DEFAULT_SCAN_ROOT).resolve()
+    scan_dir = resolve_scan_dir(root=dump_root, working=working)
     return working, scan_dir, session_name, "default"
 
 
@@ -566,7 +571,14 @@ def load_piab_state(working_folder: Path) -> dict:
 
 def save_piab_state(working_folder: Path, state: dict) -> Path:
     state["kind"] = "podcast_in_a_box"
-    return save_episode_state(working_folder, state)
+    path = save_episode_state(working_folder, state)
+    try:
+        from piab_process_log import sync_process_log_from_state
+
+        sync_process_log_from_state(working_folder, state)
+    except Exception:
+        pass
+    return path
 
 
 def mark_step(

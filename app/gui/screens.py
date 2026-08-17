@@ -7,6 +7,7 @@ SCREEN_TITLES: dict[str, str] = {
     "A1": "Podcast in a Box",
     "A2": "Resume session",
     "A3": "New session",
+    "A4": "Clean old working files",
     "B1": "vMix",
     "B2": "vMix preset",
     "B3": "Camera setup",

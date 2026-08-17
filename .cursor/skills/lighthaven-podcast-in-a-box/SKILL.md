@@ -16,7 +16,8 @@ description: >-
 Cursor-guided skill (no GUI). Reuses harness Interview tools; skips reading, intro, stitch, hand-edit, and real DeRoom.
 
 **State file:** `<working_folder>/podcast-in-a-box.json`  
-**Default scan root:** `E:\PodcastRoom`
+**Default scan root (MultiCorder dumps):** `E:\PodcastRoom`  
+**Default work root (sessions, logs, JSON):** `E:\PodcastRoom\PodcastInABox\Sessions`
 
 ## Recording flow vs autocut flow
 
@@ -35,9 +36,9 @@ Cursor-guided skill (no GUI). Reuses harness Interview tools; skips reading, int
 
 - **No overwrite** without listing paths and getting explicit approval; then pass `--allow-overwrite`.
 - **No long renders** (>~30s) without user confirmation (prep chain and full render both count).
-- After rename/move: give **Estimate A**, wait for OK before prep.
-- After 1-min approval: give **Estimate B**, wait for OK before full render.
-- Stop at the **1-min approval gate**; do not auto-start the full render.
+- After rename/move: give **Estimate A** (Fast Preview), wait for OK before preview prep.
+- **All sessions use Fast Preview.** Do not build full-length `Input/` prepped media before 1-min approval. If max video is &lt; 5 minutes, use the last 60 seconds for the preview (same as missing Start Phrase) and reuse preview prepped files after approval.
+- After 1-min approval: enqueue full prep+render (no Estimate B / F3). Do not start a second Full job while one is running.
 - **Use 5-minute completion checks for long jobs.** After launching prep or full render in the background: confirm it started once and report the estimate. Do **not** busy-wait with sub-minute polling. While the job is running, **check status about every 5 minutes** until completion or failure, then notify the user immediately (short progress notes on intermediate checks are fine). This is agent monitoring, not part of the render pipeline or future standalone app. See project **`AGENTS.md`**.
 
 **Immediate failure alerts:** `piab_run_prep.py` and `piab_run_full_render.py` write **`Temp/harness-FAILURE.json`** and show a **Windows toast** (with sound) when a step fails (e.g. ElevenLabs billing). If you launched prep in the background, also check for that marker file or a non-zero exit — do not wait for the next 5-minute poll to report failures.
@@ -51,8 +52,8 @@ Whenever you ask the user to look at a folder (previews, Raw, Output, etc.) or o
    explorer.exe "<absolute Windows path>"
    ```
 2. In the chat message, always give **both**:
-   - Plain full path for copy-paste: `E:\PodcastRoom\<name>\Temp\piab-previews`
-   - Optional markdown link: `[Open folder](file:///E:/PodcastRoom/<name>/Temp/piab-previews)`  
+   - Plain full path for copy-paste: `E:\PodcastRoom\PodcastInABox\Sessions\<name>\Temp\piab-previews`
+   - Optional markdown link: `[Open folder](file:///E:/PodcastRoom/PodcastInABox/Sessions/<name>/Temp/piab-previews)`  
      (use forward slashes in the `file:///` URL)
 3. Do **not** rely on clickable `file://` links alone — Cursor’s chat webview often fails them silently.
 
@@ -224,7 +225,7 @@ Tokens live in `.frameio-oauth.json` (gitignored) and refresh automatically.
 
 ### Default folder
 
-Sources sit at the top level of `E:\PodcastRoom`. PIAB creates a **new working subfolder** there.
+Sources sit at the top level of `E:\PodcastRoom`. PIAB creates a **new working subfolder** under `E:\PodcastRoom\PodcastInABox\Sessions`.
 
 ```powershell
 Set-Location "<repo>"
@@ -236,10 +237,10 @@ Show the user: file list, typical mtime, typical duration, counts, and any **`re
 On confirm:
 
 ```powershell
-python scripts/piab_init_session.py --name "<UserChosenName>" --root "E:\PodcastRoom"
+python scripts/piab_init_session.py --name "<UserChosenName>" --root "E:\PodcastRoom\PodcastInABox\Sessions" --scan-root "E:\PodcastRoom"
 ```
 
-Creates `E:\PodcastRoom\<UserChosenName>\` with `Raw`, `Input`, `Output`, `Temp`, and `podcast-in-a-box.json`. Init scans **`E:\PodcastRoom`** (not the empty new subfolder).
+Creates `E:\PodcastRoom\PodcastInABox\Sessions\<UserChosenName>\` with `Raw`, `Input`, `Output`, `Temp`, and `podcast-in-a-box.json`. Init scans **`E:\PodcastRoom`** (not the empty new subfolder).
 
 ### Special folder (sources already in place)
 
@@ -274,7 +275,7 @@ Option **1**: Step −1 (already recorded vs record now) → recording and/or au
 ### Step 2 — Label videos
 
 ```powershell
-python scripts/piab_extract_video_previews.py "E:\PodcastRoom\<name>"
+python scripts/piab_extract_video_previews.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>"
 ```
 
 The script names the previews `Camera 1.jpg`, `Camera 2.jpg`, etc. Before asking
@@ -294,7 +295,7 @@ Show a confirmation table. Offer **Accept**, **Re-label**, or **Swap Host ↔ Gu
 ### Step 3 — Label audio
 
 ```powershell
-python scripts/piab_extract_audio_previews.py "E:\PodcastRoom\<name>"
+python scripts/piab_extract_audio_previews.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>"
 ```
 
 The script names the previews `Mic 1 A.wav`, `Mic 1 B.wav`, etc. (two **5 s**
@@ -316,7 +317,7 @@ Rules: exactly one Host, one Guest; rest do not use. Confirm / re-label / swap H
 Build JSON maps of absolute source path → role, then:
 
 ```powershell
-python scripts/piab_apply_labels.py "E:\PodcastRoom\<name>" --video-labels-json "<json>" --audio-labels-json "<json>"
+python scripts/piab_apply_labels.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --video-labels-json "<json>" --audio-labels-json "<json>"
 ```
 
 Script copies files into `Raw` (sources stay in place) and prints **Estimate A** (prep through 1-min test).
@@ -328,7 +329,7 @@ the estimate, then **wait for confirmation** before prep.
 
 ```powershell
 # Swap Host/Guest files in Raw (clears downstream prep state)
-python scripts/piab_swap.py "E:\PodcastRoom\<name>" --files video   # or audio | both
+python scripts/piab_swap.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --files video   # or audio | both
 
 # If wrong files were labeled and sources still exist: re-run extract + apply
 # (may need --allow-overwrite after user approval)
@@ -343,14 +344,14 @@ python scripts/piab_swap.py "E:\PodcastRoom\<name>" --files video   # or audio |
 Long job — only after Estimate A approval:
 
 ```powershell
-python scripts/piab_run_prep.py "E:\PodcastRoom\<name>"
+python scripts/piab_run_prep.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>"
 ```
 
 To **resume** after a failure (e.g. ElevenLabs billing) without redoing video-sync:
 
 ```powershell
-python scripts/piab_resume_prep.py "E:\PodcastRoom\<name>"
-python scripts/piab_run_prep.py "E:\PodcastRoom\<name>" --resume
+python scripts/piab_resume_prep.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>"
+python scripts/piab_run_prep.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --resume
 ```
 
 `--resume` skips steps whose outputs already exist on disk (conversation-sync → clean audio → prepped Input files → transcript → 1 Min Test). Optional `--from-step transcribe` (aliases: `video_sync`, `one_min`, `06`–`10`) forces a start point. On failure, `Temp/harness-FAILURE.json` records the step; the next `--resume` starts there.
@@ -372,7 +373,7 @@ Default gates (editable in `podcast-phrase-gates.json`):
 Then **open `Output`** (`explorer.exe`), give plain path + optional link, and tell
 the user:
 
-> 1 Min Test is ready for review: `E:\PodcastRoom\<name>\Output\1 Min Test.mp4`
+> 1 Min Test is ready for review: `E:\PodcastRoom\PodcastInABox\Sessions\<name>\Output\1 Min Test.mp4`
 
 When **`Temp/failed-sync-confidence.json`** exists, prep renders **two** tests instead:
 
@@ -383,8 +384,8 @@ When **`Temp/failed-sync-confidence.json`** exists, prep renders **two** tests i
 (side-by-side players). User picks which sounds better, then confirms the chosen test on **F2**.
 
 ```powershell
-python scripts/piab_record_sync_offset_choice.py "E:\PodcastRoom\<name>" --choice start_aligned
-python scripts/piab_record_sync_offset_choice.py "E:\PodcastRoom\<name>" --choice forced_offset
+python scripts/piab_record_sync_offset_choice.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --choice start_aligned
+python scripts/piab_record_sync_offset_choice.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --choice forced_offset
 ```
 
 See **`docs/av-sync-confidence-fallback.md`** in the upstream PIAB repo.
@@ -399,7 +400,7 @@ or similar phrasing — assume **Raw and Input files are labeled correctly**. Do
 swap Raw audio or re-run prep. Run:
 
 ```powershell
-python scripts/piab_fix_audio_speaker_swap.py "E:\PodcastRoom\<name>" --allow-overwrite
+python scripts/piab_fix_audio_speaker_swap.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --allow-overwrite
 ```
 
 In the **GUI app**, F2 **Host/Guest swapped in edit** calls the same backend.
@@ -422,13 +423,13 @@ only (~minutes). Unchanged on disk: `Host Video-prepped.mp4`, `Guest Video-prepp
 ### Step 6 — Estimate B + full render
 
 ```powershell
-python scripts/piab_estimate.py "E:\PodcastRoom\<name>" --which full --mark-awaiting
+python scripts/piab_estimate.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --which full --mark-awaiting
 ```
 
 Show the estimate. **Wait for confirmation.** Then:
 
 ```powershell
-python scripts/piab_run_full_render.py "E:\PodcastRoom\<name>" --allow-overwrite
+python scripts/piab_run_full_render.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --allow-overwrite
 ```
 
 If delivery was enabled at session start, this also uploads `Full Interview.mp4` to Frame.io, creates a **public** no-expiration share, emails the `short_url` to the confirmed recipient, and writes:
@@ -442,7 +443,7 @@ Delivery failure does **not** fail the render; the user gets a failure email wit
 When done, **open `Output`** (`explorer.exe`), give plain path + optional link, and
 say exactly:
 
-> Full render is complete: `E:\PodcastRoom\<name>\Output\Full Interview.mp4`
+> Full render is complete: `E:\PodcastRoom\PodcastInABox\Sessions\<name>\Output\Full Interview.mp4`
 
 Filename: **`Full Interview.mp4`** under the session **Output** folder. Stop.
 

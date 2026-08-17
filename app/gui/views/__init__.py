@@ -15,6 +15,7 @@ from app.gui.views.labeling_screens import (
     LabelMicrophonesScreen,
 )
 from app.gui.views.error_screen import ErrorScreen
+from app.gui.views.clean_working_screen import CleanWorkingFilesScreen
 from app.gui.views.done_screen import DoneScreen
 from app.gui.views.new_session_screen import NewSessionScreen
 from app.gui.views.placeholder_screen import PlaceholderScreen
@@ -34,13 +35,13 @@ from app.gui.views.review_screens import (
     FullRenderScreen,
     OneMinReviewScreen,
     SyncOffsetReviewScreen,
-    SyncOffsetReviewScreen,
 )
 from app.gui.views.welcome_screen import WelcomeScreen
 
 __all__ = [
     "ApplyLabelsScreen",
     "CameraSetupScreen",
+    "CleanWorkingFilesScreen",
     "ConfirmSourceScreen",
     "CreateSessionScreen",
     "DeliveryScreen",
@@ -63,6 +64,7 @@ __all__ = [
     "SessionNameScreen",
     "SessionReadyScreen",
     "SourceLocationScreen",
+    "SyncOffsetReviewScreen",
     "VmixEnsureScreen",
     "VmixPresetScreen",
     "WelcomeScreen",

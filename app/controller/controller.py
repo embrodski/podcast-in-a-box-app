@@ -9,19 +9,33 @@ import threading
 import json
 from pathlib import Path
 
-from app.controller.jobs import JobRunner
+from app.controller.abort_session import record_session_abort
+from app.controller.job_queue import JobQueueStore, Lane
+from app.controller.jobs import FULL_KINDS, JobRunner
 from app.controller.lock import AppLock
 from app.controller.overwrite import check_overwrite_risk
-from app.controller.prep_progress import read_prep_progress as _read_prep_progress
+from app.controller.prep_progress import (
+    read_prep_failure,
+    read_prep_progress as _read_prep_progress,
+)
 from app.controller.render_progress import read_render_progress as _read_render_progress
-from app.controller.paths import DEFAULT_SCAN_ROOT, REPO_ROOT, SCRIPTS_DIR, ensure_scripts_path
+from app.controller.paths import (
+    DEFAULT_SCAN_ROOT,
+    DEFAULT_WORK_ROOT,
+    JOB_QUEUE_FILENAME,
+    REPO_ROOT,
+    SCRIPTS_DIR,
+    ensure_scripts_path,
+    ensure_work_root,
+)
 from app.controller.preflight import run_preflight
-from app.controller.types import PreflightReport
+from app.controller.types import AbortResult, Job, JobKind, PreflightReport
 from app.controller.resume_router import resume_screen_for
 from app.controller.session_store import (
     generate_session_name,
     list_recent_sessions,
     load_session_state,
+    remember_session_folder,
     save_session_state,
 )
 from app.controller.labeling import (
@@ -64,15 +78,22 @@ class PiabController:
         self,
         *,
         scan_root: Path = DEFAULT_SCAN_ROOT,
+        work_root: Path | None = None,
         lock: AppLock | None = None,
         jobs: JobRunner | None = None,
+        job_queue: JobQueueStore | None = None,
         max_processing_jobs: int = 1,
     ) -> None:
         self.scan_root = scan_root.resolve()
+        self.work_root = (work_root or DEFAULT_WORK_ROOT).resolve()
+        if work_root is None:
+            ensure_work_root(self.work_root)
         self.repo_root = REPO_ROOT
         self.scripts_dir = SCRIPTS_DIR
         self.lock = lock or AppLock()
         self.jobs = jobs or JobRunner(max_processing_jobs=max_processing_jobs)
+        queue_path = self.work_root / JOB_QUEUE_FILENAME
+        self.job_queue = job_queue or JobQueueStore(queue_path)
         self._recording_job_id: str | None = None
         self._recording_continue = threading.Event()
 
@@ -86,14 +107,48 @@ class PiabController:
         return run_preflight(scan_root=self.scan_root)
 
     def generate_session_name(self) -> str:
-        return generate_session_name(self.scan_root)
+        return generate_session_name(self.work_root)
 
     def list_recent_sessions(self, *, limit: int = 20) -> list[Path]:
-        return list_recent_sessions(self.scan_root, limit=limit)
+        return list_recent_sessions(self.work_root, limit=limit)
+
+    def remember_session_folder(self, working_folder: Path) -> None:
+        remember_session_folder(working_folder)
 
     def resume_screen_for(self, working_folder: Path) -> str:
-        state = load_session_state(working_folder.resolve())
-        return resume_screen_for(state.get("resume_at"))
+        folder = working_folder.resolve()
+        state = load_session_state(folder)
+        if read_prep_failure(folder):
+            return "F1"
+        return resume_screen_for(state.get("resume_at"), state=state)
+
+    def resume_full_needs_overwrite(self, working_folder: Path) -> bool:
+        """True when resuming an aborted full-after-preview that already wrote outputs."""
+        try:
+            state = load_session_state(working_folder.resolve())
+        except Exception:
+            return False
+        if not (state.get("fast_preview_approval") or {}).get("approved_at"):
+            return False
+        if state.get("last_abort"):
+            return True
+        steps = state.get("steps") if isinstance(state.get("steps"), dict) else {}
+        for step_id in (
+            "06_conversation_sync",
+            "07_deroom_placeholder",
+            "08_video_sync",
+            "09_transcribe",
+            "10_one_min_test",
+            "13_full_prep_after_preview",
+            "13_full_render",
+        ):
+            entry = steps.get(step_id) if isinstance(steps, dict) else None
+            if isinstance(entry, dict) and entry.get("status") in {"aborted", "in_progress"}:
+                return True
+        raw = Path(str((state.get("paths") or {}).get("raw") or working_folder / "Raw"))
+        if raw.is_dir() and any(raw.glob("*Combined Audio.wav")):
+            return True
+        return False
 
     def check_overwrite_risk(self, action: str, working_folder: Path) -> list[Path]:
         return check_overwrite_risk(action, working_folder)
@@ -106,9 +161,50 @@ class PiabController:
         if self.lock.is_recording_active() or self._recording_job_id:
             reasons.append("recording")
         for job in self.jobs.list_jobs():
-            if job.status == "running" and job.kind in {"prep", "render"}:
+            if job.status == "running" and job.kind in {
+                "prep",
+                "render",
+                "fast_preview",
+                "full_after_preview",
+            }:
                 reasons.append(job.kind)
         return reasons
+
+    def should_confirm_close_program(self) -> bool:
+        """True when Close Program would abort a run or pause waiting jobs."""
+        if self.job_queue.has_running_or_queued():
+            return True
+        return any(
+            job.status == "running"
+            and job.kind in {"prep", "render", "fast_preview", "full_after_preview"}
+            for job in self.jobs.list_jobs()
+        )
+
+    def autocut_status_line(self) -> str:
+        if self.job_queue.has_active_work() or any(
+            job.status == "running"
+            and job.kind in {"prep", "render", "fast_preview", "full_after_preview"}
+            for job in self.jobs.list_jobs()
+        ):
+            return (
+                "Autocut in progress. New Recordings OK. "
+                "New Autocuts will be added to queue."
+            )
+        return ""
+
+    def full_queue_display(self) -> tuple[dict | None, list[dict]]:
+        current, waiting = self.job_queue.full_current_and_waiting()
+        return (
+            current.to_dict() if current else None,
+            [entry.to_dict() for entry in waiting],
+        )
+
+    def protected_session_folders(self) -> set[Path]:
+        folders = set(self.job_queue.protected_folders())
+        for job in self.jobs.list_jobs():
+            if job.status == "running" and job.session_folder is not None:
+                folders.add(job.session_folder.resolve())
+        return folders
 
     def get_recording_phrases(self) -> RecordingPhrases:
         return get_recording_phrases()
@@ -163,7 +259,7 @@ class PiabController:
     def find_running_render_job(self, working_folder: Path):
         folder = working_folder.resolve()
         for job in self.jobs.list_jobs():
-            if job.kind != "render" or job.status != "running":
+            if job.kind not in {"render", "full_after_preview"} or job.status != "running":
                 continue
             if job.session_folder and job.session_folder.resolve() == folder:
                 return job
@@ -327,6 +423,13 @@ class PiabController:
         except Exception:
             return False
 
+    def warmup_cameras_for_recording(self) -> dict:
+        """Preview-cycle DeckLink cameras so HDMI audio can lock before MultiCorder."""
+        ensure_scripts_path()
+        from piab_vmix_warmup import warmup_decklink_cameras
+
+        return warmup_decklink_cameras()
+
     def can_start_recording(self) -> tuple[bool, str]:
         if self.lock.is_recording_active() or self._recording_job_id:
             return False, "A recording session is already active."
@@ -447,8 +550,17 @@ class PiabController:
             argv.extend(["--working-folder", str(folder)])
         elif mode == "default":
             session_name = name or self.generate_session_name()
-            folder = self.scan_root / session_name
-            argv.extend(["--name", session_name, "--root", str(self.scan_root)])
+            folder = self.work_root / session_name
+            argv.extend(
+                [
+                    "--name",
+                    session_name,
+                    "--root",
+                    str(self.work_root),
+                    "--scan-root",
+                    str(self.scan_root),
+                ]
+            )
         else:
             raise ValueError(f"Unknown init mode: {mode!r}")
 
@@ -474,9 +586,9 @@ class PiabController:
                 message = f"{message}:\n{detail}"
             raise RuntimeError(message)
 
-        if mode == "default":
-            return folder.resolve()
-        return working_folder.resolve()
+        created = folder.resolve() if mode == "default" else working_folder.resolve()
+        remember_session_folder(created)
+        return created
 
     def fast_preview_eligible(self, state: dict) -> bool:
         return fast_preview_eligible_for_state(state)
@@ -499,14 +611,16 @@ class PiabController:
         args = [str(working_folder.resolve())]
         if allow_overwrite:
             args.append("--allow-overwrite")
+        folder = working_folder.resolve()
         job = self.jobs.start_script(
             "fast_preview",
             self.scripts_dir / "piab_run_fast_preview.py",
             args,
             cwd=self.repo_root,
-            session_folder=working_folder.resolve(),
+            session_folder=folder,
         )
         self.lock.add_processing_job(job.id)
+        self.job_queue.mark_running(folder, "fast_preview")
         return job
 
     def start_full_after_preview(
@@ -518,14 +632,16 @@ class PiabController:
         args = [str(working_folder.resolve())]
         if allow_overwrite:
             args.append("--allow-overwrite")
+        folder = working_folder.resolve()
         job = self.jobs.start_script(
             "full_after_preview",
             self.scripts_dir / "piab_run_full_after_preview.py",
             args,
             cwd=self.repo_root,
-            session_folder=working_folder.resolve(),
+            session_folder=folder,
         )
         self.lock.add_processing_job(job.id)
+        self.job_queue.mark_running(folder, "full")
         return job
 
     def approve_fast_preview(self, working_folder: Path) -> dict:
@@ -583,30 +699,102 @@ class PiabController:
         if allow_overwrite:
             args.append("--allow-overwrite")
 
+        folder = working_folder.resolve()
         job = self.jobs.start_script(
             "render",
             self.scripts_dir / "piab_run_full_render.py",
             args,
             cwd=self.repo_root,
-            session_folder=working_folder.resolve(),
+            session_folder=folder,
         )
         self.lock.add_processing_job(job.id)
+        self.job_queue.mark_running(folder, "full")
         return job
 
-    def abort_job(self, job_id: str, *, confirmed: bool) -> AbortResult:
+    def abort_job(
+        self,
+        job_id: str,
+        *,
+        confirmed: bool,
+        advance_queue: bool = True,
+    ) -> AbortResult:
+        job = self.jobs.get_job(job_id)
         result = self.jobs.abort_job(job_id, confirmed=confirmed)
         if result.status == "aborted":
             self.lock.remove_processing_job(job_id)
             if job_id == self._recording_job_id:
                 self._recording_job_id = None
                 self.lock.set_recording_active(False)
+            if job is not None and job.session_folder is not None:
+                if job.kind != "recording":
+                    try:
+                        record_session_abort(
+                            job.session_folder,
+                            message=result.message or "Aborted by user.",
+                        )
+                    except Exception:
+                        pass
+                lane = self._lane_for_kind(job.kind)
+                if lane is not None:
+                    if advance_queue:
+                        self.job_queue.cancel(job.session_folder, lane)
+                        self.start_next_queued(lane)
+                    else:
+                        self.job_queue.mark_interrupted(job.session_folder, lane)
         return result
+
+    def record_session_abort(
+        self,
+        working_folder: Path,
+        *,
+        message: str = "Aborted by user.",
+    ) -> dict:
+        return record_session_abort(working_folder, message=message)
+
+    def hold_queued_job(self, working_folder: Path, lane: Lane) -> bool:
+        """Remove a waiting job from auto-process without aborting the session."""
+        return self.job_queue.hold(working_folder.resolve(), lane) is not None
+
+    def list_held_jobs(self) -> list[dict]:
+        return [entry.to_dict() for entry in self.job_queue.held()]
+
+    def resume_held_job(self, working_folder: Path, lane: Lane) -> Job | None:
+        folder = working_folder.resolve()
+        entry = self.job_queue.entry_for(folder, lane)
+        if entry is None or entry.status != "held":
+            return None
+        self.job_queue.enqueue(folder, lane, name=entry.name)
+        return self.start_next_queued(lane)
+
+    def cancel_queued_job(self, working_folder: Path, lane: Lane) -> bool:
+        folder = working_folder.resolve()
+        cancelled = self.job_queue.cancel(folder, lane)
+        if cancelled:
+            try:
+                record_session_abort(
+                    folder,
+                    message="Cancelled from queue before the job started.",
+                )
+            except Exception:
+                pass
+            self.start_next_queued(lane)
+        return cancelled
 
     def poll_jobs(self) -> list[Job]:
         finished = self.jobs.poll()
         for job in finished:
             if job.kind in {"prep", "render", "fast_preview", "full_after_preview"}:
                 self.lock.remove_processing_job(job.id)
+            if job.session_folder is None:
+                continue
+            lane = self._lane_for_kind(job.kind)
+            if lane is None:
+                continue
+            if job.status == "completed":
+                self.job_queue.complete(job.session_folder, lane)
+                self.start_next_queued(lane)
+            elif job.status == "failed":
+                self.job_queue.mark_failed(job.session_folder, lane)
         return finished
 
     def get_job(self, job_id: str) -> Job | None:
@@ -614,3 +802,146 @@ class PiabController:
 
     def list_jobs(self) -> list[Job]:
         return self.jobs.list_jobs()
+
+    def list_clean_working_candidates(self) -> list[dict]:
+        from app.controller.clean_working import list_clean_working_candidates
+
+        protected = {str(p) for p in self.protected_session_folders()}
+        rows = list_clean_working_candidates()
+        return [
+            row
+            for row in rows
+            if str(Path(str(row.get("project_folder") or "")).resolve()) not in protected
+        ]
+
+    def scan_lost_clean_sessions(self) -> list[dict]:
+        from app.controller.clean_working import scan_lost_clean_sessions
+
+        protected = {str(p) for p in self.protected_session_folders()}
+        rows = scan_lost_clean_sessions()
+        return [
+            row
+            for row in rows
+            if str(Path(str(row.get("project_folder") or "")).resolve()) not in protected
+        ]
+
+    def clean_working_files(self, project_folders: list[Path]) -> list[dict]:
+        from app.controller.clean_working import clean_working_files
+
+        protected = self.protected_session_folders()
+        allowed = []
+        for folder in project_folders:
+            resolved = Path(folder).resolve()
+            if resolved in protected:
+                raise RuntimeError(
+                    f"Cannot clean {resolved.name}: that session is queued or running."
+                )
+            allowed.append(resolved)
+        results = clean_working_files(allowed)
+        for folder in allowed:
+            self.job_queue.cancel(folder, "full")
+            self.job_queue.cancel(folder, "fast_preview")
+        return results
+
+    def _lane_for_kind(self, kind: JobKind) -> Lane | None:
+        if kind == "fast_preview":
+            return "fast_preview"
+        if kind in FULL_KINDS:
+            return "full"
+        return None
+
+    def _session_name(self, folder: Path) -> str:
+        try:
+            state = load_session_state(folder)
+            return str(state.get("name") or folder.name)
+        except Exception:
+            return folder.name
+
+    def request_fast_preview(
+        self,
+        working_folder: Path,
+        *,
+        allow_overwrite: bool = False,
+    ) -> Job | None:
+        folder = working_folder.resolve()
+        self.job_queue.enqueue(folder, "fast_preview", name=self._session_name(folder))
+        started = self.start_next_queued(lane="fast_preview", allow_overwrite=allow_overwrite)
+        if started and started.session_folder and started.session_folder.resolve() == folder:
+            return started
+        return None
+
+    def request_full_job(
+        self,
+        working_folder: Path,
+        *,
+        allow_overwrite: bool = False,
+    ) -> Job | None:
+        folder = working_folder.resolve()
+        self.job_queue.enqueue(folder, "full", name=self._session_name(folder))
+        started = self.start_next_queued(lane="full", allow_overwrite=allow_overwrite)
+        if started and started.session_folder and started.session_folder.resolve() == folder:
+            return started
+        return None
+
+    def _start_full_lane_job(
+        self,
+        folder: Path,
+        *,
+        allow_overwrite: bool = False,
+    ) -> Job:
+        try:
+            state = load_session_state(folder)
+        except Exception:
+            state = {}
+        if self.full_after_preview_pending(state) or state.get("fast_preview_approval"):
+            return self.start_full_after_preview(folder, allow_overwrite=allow_overwrite)
+        return self.start_render(folder, allow_overwrite=allow_overwrite)
+
+    def start_next_queued(
+        self,
+        lane: Lane,
+        *,
+        allow_overwrite: bool = False,
+    ) -> Job | None:
+        if lane == "fast_preview" and self.jobs.running_fast_preview_count():
+            return None
+        if lane == "full" and self.jobs.running_full_count():
+            return None
+        # Queue can stay "running" after a process exits if poll missed it.
+        self.job_queue.requeue_stale_running(lane)
+        rows = self.job_queue.load()[lane]
+        if any(e.status in {"failed", "interrupted"} for e in rows):
+            return None
+        entry = self.job_queue.next_queued(lane)
+        if entry is None:
+            return None
+        folder = entry.folder_path
+        if lane == "fast_preview":
+            return self.start_fast_preview(folder, allow_overwrite=allow_overwrite)
+        return self._start_full_lane_job(folder, allow_overwrite=allow_overwrite)
+
+    def interrupt_running_for_quit(self) -> None:
+        for job in self.jobs.list_jobs():
+            if job.status == "running" and job.kind != "recording":
+                self.abort_job(job.id, confirmed=True, advance_queue=False)
+        self.job_queue.interrupt_running()
+
+    def list_interrupted_jobs(self) -> list[dict]:
+        return [entry.to_dict() for entry in self.job_queue.interrupted()]
+
+    def resume_interrupted(self, working_folder: Path, lane: Lane) -> Job | None:
+        folder = working_folder.resolve()
+        entry = self.job_queue.entry_for(folder, lane)
+        if entry is None or entry.status != "interrupted":
+            return None
+        if lane == "fast_preview":
+            if self.jobs.running_fast_preview_count():
+                return None
+            return self.start_fast_preview(folder, allow_overwrite=True)
+        if self.jobs.running_full_count():
+            return None
+        return self._start_full_lane_job(folder, allow_overwrite=True)
+
+    def abort_interrupted(self, working_folder: Path, lane: Lane) -> None:
+        self.job_queue.cancel(working_folder.resolve(), lane)
+        self.start_next_queued(lane)

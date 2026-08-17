@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from app.controller.paths import DEFAULT_WORK_ROOT
 from app.controller.session_store import PIAB_STATE_FILENAME
 from app.gui.widgets.screen_base import ScreenWidget
 from app.gui.widgets.selectable_text import body_label
@@ -64,7 +65,10 @@ class ResumeScreen(ScreenWidget):
         self._list.clear()
         self._sessions = self.controller.list_recent_sessions(limit=25)
         if not self._sessions:
-            self._list.addItem("(No recent sessions found under E:\\PodcastRoom)")
+            self._list.addItem(
+                "(No recent sessions found. Default sessions live under "
+                f"{DEFAULT_WORK_ROOT}; special folders appear here after you open them.)"
+            )
             return
         for folder in self._sessions:
             screen = self.controller.resume_screen_for(folder)
@@ -98,7 +102,7 @@ class ResumeScreen(ScreenWidget):
         self._resume_folder(folder)
 
     def _browse(self) -> None:
-        start = str(self.controller.scan_root)
+        start = str(self.controller.work_root)
         chosen = QFileDialog.getExistingDirectory(self, "Select session folder", start)
         if not chosen:
             return
@@ -115,5 +119,10 @@ class ResumeScreen(ScreenWidget):
         self._resume_folder(folder)
 
     def _resume_folder(self, folder: Path) -> None:
+        for lane in ("fast_preview", "full"):
+            entry = self.controller.job_queue.entry_for(folder, lane)
+            if entry is not None and entry.status == "held":
+                self.controller.resume_held_job(folder, lane)
+                break
         screen = self.controller.resume_screen_for(folder)
         self.navigate_session.emit(screen, folder)

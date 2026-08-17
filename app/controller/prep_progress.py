@@ -150,7 +150,7 @@ def read_prep_failure(working_folder: Path) -> dict | None:
 
 
 def clear_prep_failure(working_folder: Path) -> None:
-    """Remove stale failure markers so a retry can start prep."""
+    """Remove stale failure markers so a retry can start prep or full render."""
     for temp in (working_folder / "Temp", working_folder / "Preview Files" / "Temp"):
         for name in (FAILURE_JSON_NAME, "harness-FAILURE.txt"):
             path = temp / name
@@ -249,10 +249,15 @@ def _format_remaining(seconds: float) -> str:
 
 
 def _estimate_breakdown(state: dict, *, fast: bool) -> dict | None:
-    key = "estimate_prep_fast" if fast else "estimate_prep"
-    estimate = state.get(key)
-    if not isinstance(estimate, dict) and fast:
-        estimate = state.get("estimate_prep")
+    if fast:
+        from app.controller.paths import ensure_scripts_path
+
+        ensure_scripts_path()
+        from piab_fast_preview_lib import estimate_fast_preview_prep
+
+        breakdown = estimate_fast_preview_prep().get("breakdown")
+        return breakdown if isinstance(breakdown, dict) else None
+    estimate = state.get("estimate_prep")
     if not isinstance(estimate, dict):
         return None
     breakdown = estimate.get("breakdown")

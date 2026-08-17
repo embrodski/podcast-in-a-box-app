@@ -37,6 +37,7 @@ def navigate_to_failure(
     retry_screen: str,
     detail: str | None = None,
     aborted: bool = False,
+    report: bool = True,
 ) -> None:
     set_failure_context(
         screen.context(),
@@ -45,4 +46,17 @@ def navigate_to_failure(
         detail=detail,
         aborted=aborted,
     )
+    if report and not aborted:
+        from app.gui.failure_alert import alert_workflow_failure
+
+        ctx = screen.context()
+        folder = ctx.session_folder if ctx is not None else None
+        alert_workflow_failure(
+            screen,
+            working_folder=folder,
+            summary=summary,
+            detail=detail,
+            aborted=aborted,
+            report=report,
+        )
     screen.navigate.emit("F1")

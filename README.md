@@ -6,7 +6,7 @@ Standalone app leg of **Podcast in a Box (PIAB)** — built from the Cursor/agen
 
 | | **This repo (App)** | **Fallback (PIAB pipeline)** |
 |---|---------------------|------------------------------|
-| **Local path** | `E:\PodcastRoom\Cursor\podcast-in-a-box-app` | `E:\PodcastRoom\Cursor\automated-video-editing` |
+| **Local path** | `E:\PodcastRoom\PodcastInABox` | `E:\PodcastRoom\Cursor\automated-video-editing` |
 | **Git remote (`upstream`)** | — | `https://github.com/embrodski/automated-video-editing` |
 | **Frozen branch** | — | `lighthaven-podcast-in-a-box` |
 | **Purpose** | Next phase: standalone app / GUI / productization | Cursor-guided walk-in pipeline (recording + autocut + delivery) |
@@ -39,7 +39,7 @@ See `.cursor/skills/lighthaven-podcast-in-a-box/SKILL.md` for the full pipeline 
 ```powershell
 python -m app.cli preflight
 python -m app.cli sessions
-python -m app.cli resume --folder "E:\PodcastRoom\<name>"
+python -m app.cli resume --folder "E:\PodcastRoom\PodcastInABox\Sessions\<name>"
 ```
 
 **Desktop app (PySide6):**
@@ -50,6 +50,16 @@ python -m app.main
 ```
 
 Or double-click `run_piab_app.bat`.
+
+## Process log
+
+Every autocut session is summarized in a single app-wide log:
+
+**`E:\PodcastRoom\PodcastInABox\Sessions\piab-process-log.json`**
+
+Each entry records when the process began, the delivery email (if any), the project folder and its subfolders, completed steps with timestamps, and whether the final video finished, uploaded to Frame.io, and emailed (with dates). The log updates whenever session state is saved.
+
+**Clean Old Working Files** (home screen) lists logged projects that still have `Raw` / `Input` / `Temp` / `Preview Files`, moves those folders to the Recycle Bin (keeps `Output`), and records the cleanup on the same log entry.
 
 ## Syncing scripts from the fallback pipeline
 
@@ -80,7 +90,7 @@ Shared PIAB logic lives in both repos. The **app** vendors copies under `scripts
 ### After every sync
 
 ```powershell
-cd E:\PodcastRoom\Cursor\podcast-in-a-box-app\scripts
+cd E:\PodcastRoom\PodcastInABox\scripts
 python -m unittest test_piab_lib.DiscoverClustersTests test_piab_sync_offset -v
 cd ..
 python -m unittest tests.test_controller -v

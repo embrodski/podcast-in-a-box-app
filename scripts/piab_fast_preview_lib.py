@@ -18,12 +18,17 @@ from piab_lib import (
     WIDE_RAW_VIDEO,
     estimate_prep_through_one_min,
     ffprobe_duration,
+    format_eta_range,
 )
 
 FAST_PREVIEW_DIR_NAME = "Preview Files"
 PREVIEW_PREFIX = "Preview "
 FAST_PREVIEW_CLIP_SEC = 300.0
-FAST_PREVIEW_THRESHOLD_SEC = 600.0  # enabled when max video duration > 10 minutes
+# Observed Fast Preview wall-clock is ~3× faster than the shared prep formula.
+FAST_PREVIEW_ESTIMATE_DIVISOR = 3.0
+# Kept for older session JSON; Fast Preview now runs for every labeled session.
+FAST_PREVIEW_THRESHOLD_SEC = 600.0
+FAST_PREVIEW_SHORT_SOURCE_SEC = 300.0  # < 5 min → tail 1-min + reuse prepped files
 FAST_PREVIEW_START_PHRASE_MAX_SEC = 240.0  # 4 minutes — phrase must appear by here
 
 PREVIEW_ONE_MIN_DEFAULT = f"{PREVIEW_PREFIX}1 Min Test.mp4"
@@ -77,11 +82,52 @@ def max_raw_video_duration_sec(raw_dir: Path) -> float:
 
 
 def fast_preview_eligible(raw_dir: Path) -> bool:
-    return max_raw_video_duration_sec(raw_dir) > FAST_PREVIEW_THRESHOLD_SEC
+    """True when labeled Host/Guest/Wide videos exist (all sessions use Fast Preview)."""
+    max_raw_video_duration_sec(raw_dir)
+    return True
+
+
+def is_short_source_duration(duration_sec: float | None) -> bool:
+    return duration_sec is not None and float(duration_sec) < FAST_PREVIEW_SHORT_SOURCE_SEC
+
+
+def short_source_duration_from_state(state: dict | None) -> float | None:
+    if not state:
+        return None
+    fp = state.get("fast_preview") if isinstance(state.get("fast_preview"), dict) else {}
+    raw = None
+    if isinstance(fp, dict):
+        raw = fp.get("max_video_duration_sec")
+    if raw is None:
+        raw = state.get("max_video_duration_sec")
+    try:
+        if raw is None:
+            return None
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_short_source_state(state: dict | None) -> bool:
+    return is_short_source_duration(short_source_duration_from_state(state))
 
 
 def estimate_fast_preview_prep() -> dict[str, Any]:
-    return estimate_prep_through_one_min(FAST_PREVIEW_CLIP_SEC)
+    raw = estimate_prep_through_one_min(FAST_PREVIEW_CLIP_SEC)
+    center = float(raw["center_sec"]) / FAST_PREVIEW_ESTIMATE_DIVISOR
+    result = format_eta_range(center)
+    breakdown = dict(raw.get("breakdown") or {})
+    for key in (
+        "conversation_sync_sec",
+        "video_sync_sec",
+        "transcribe_sec",
+        "one_min_render_sec",
+    ):
+        value = breakdown.get(key)
+        if isinstance(value, (int, float)):
+            breakdown[key] = int(round(value / FAST_PREVIEW_ESTIMATE_DIVISOR))
+    result["breakdown"] = breakdown
+    return result
 
 
 def _ffmpeg_copy_head(*, src: Path, dest: Path, seconds: float) -> None:
@@ -122,12 +168,9 @@ def create_preview_clips(
 
     working = working_folder.resolve()
     state = load_piab_state(working)
+    restore_canonical_paths(state)
     raw = Path(state["paths"]["raw"])
-    if not fast_preview_eligible(raw):
-        raise ValueError(
-            f"Fast Preview requires max labeled video duration > "
-            f"{FAST_PREVIEW_THRESHOLD_SEC:.0f}s"
-        )
+    max_raw_video_duration_sec(raw)
 
     ensure_preview_layout(working)
     preview_raw = preview_root(working)
@@ -148,6 +191,7 @@ def create_preview_clips(
         "clip_sec": FAST_PREVIEW_CLIP_SEC,
         "threshold_sec": FAST_PREVIEW_THRESHOLD_SEC,
         "max_video_duration_sec": max_video,
+        "short_source": is_short_source_duration(max_video),
         "preview_root": str(preview_raw.resolve()),
         "clips": clips,
         "clips_created_at": utc_now_iso(),
@@ -229,6 +273,201 @@ def apply_fast_preview_approval_to_state(state: dict) -> None:
         state["sync_offset_choice_pending"] = False
 
 
+def snapshot_preview_sandbox_artifacts(state: dict) -> dict[str, Any]:
+    """Keep preview prep paths after approval pops canonical keys."""
+    artifacts = {
+        "main_prepped": copy.deepcopy(state.get("main_prepped")),
+        "main_prepped_forced_offset": copy.deepcopy(state.get("main_prepped_forced_offset")),
+        "main_transcript_json": state.get("main_transcript_json"),
+        "main_combined_audio": state.get("main_combined_audio"),
+        "main_clean_audio": state.get("main_clean_audio"),
+    }
+    fp = state.setdefault("fast_preview", {})
+    if isinstance(fp, dict):
+        fp["sandbox_artifacts"] = artifacts
+    return artifacts
+
+
+def _strip_preview_prefix(name: str) -> str:
+    if name.startswith(PREVIEW_PREFIX):
+        return name[len(PREVIEW_PREFIX) :]
+    return name
+
+
+def _canonical_destination_for_preview_file(src: Path, working_folder: Path) -> Path:
+    working = working_folder.resolve()
+    preview = preview_root(working)
+    src = src.resolve()
+    name = _strip_preview_prefix(src.name)
+    try:
+        rel = src.relative_to(preview)
+    except ValueError:
+        return working / "Input" / name
+    parts = rel.parts
+    if len(parts) == 1:
+        return working / "Raw" / name
+    top = parts[0]
+    if top == "Input":
+        return working / "Input" / name
+    if top == "Temp":
+        return working / "Temp" / name
+    if top == "Output":
+        return working / "Output" / name
+    return working / "Raw" / name
+
+
+def _copy_preview_file(
+    src: Path,
+    working_folder: Path,
+    *,
+    allow_overwrite: bool,
+) -> Path:
+    from harness_overwrite_guard import refuse_overwrite
+
+    dest = _canonical_destination_for_preview_file(src, working_folder)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    refuse_overwrite(dest, allow_overwrite=allow_overwrite)
+    import shutil
+
+    shutil.copy2(src, dest)
+    return dest
+
+
+def _rewrite_preview_paths_in_value(
+    value: Any,
+    working_folder: Path,
+    *,
+    allow_overwrite: bool,
+) -> Any:
+    if isinstance(value, str):
+        path = Path(value)
+        if path.is_file() and FAST_PREVIEW_DIR_NAME in path.parts:
+            return str(_copy_preview_file(path, working_folder, allow_overwrite=allow_overwrite))
+        return value
+    if isinstance(value, list):
+        return [
+            _rewrite_preview_paths_in_value(item, working_folder, allow_overwrite=allow_overwrite)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _rewrite_preview_paths_in_value(
+                item, working_folder, allow_overwrite=allow_overwrite
+            )
+            for key, item in value.items()
+        }
+    return value
+
+
+def promote_short_source_preview_to_canonical(
+    working_folder: Path,
+    *,
+    allow_overwrite: bool = False,
+) -> dict[str, Any]:
+    """Copy <5 min Fast Preview prepped media into canonical Input/Temp/Raw."""
+    from piab_lib import load_piab_state, mark_step, save_piab_state
+
+    working = working_folder.resolve()
+    state = load_piab_state(working)
+    restore_canonical_paths(state)
+    apply_fast_preview_approval_to_state(state)
+
+    fp = state.get("fast_preview") if isinstance(state.get("fast_preview"), dict) else {}
+    artifacts = (fp or {}).get("sandbox_artifacts") or {}
+    choice = state.get("sync_offset_choice")
+    prep = artifacts.get("main_prepped")
+    if choice == "forced_offset" and artifacts.get("main_prepped_forced_offset"):
+        prep = artifacts.get("main_prepped_forced_offset")
+    if not isinstance(prep, dict):
+        raise ValueError("Short-source Fast Preview has no sandbox prepped media to reuse.")
+
+    promoted_prep = _rewrite_preview_paths_in_value(
+        prep, working, allow_overwrite=allow_overwrite
+    )
+    transcript = artifacts.get("main_transcript_json")
+    combined = artifacts.get("main_combined_audio")
+    clean = artifacts.get("main_clean_audio")
+    if transcript:
+        state["main_transcript_json"] = _rewrite_preview_paths_in_value(
+            transcript, working, allow_overwrite=allow_overwrite
+        )
+    if combined:
+        state["main_combined_audio"] = _rewrite_preview_paths_in_value(
+            combined, working, allow_overwrite=allow_overwrite
+        )
+    if clean:
+        state["main_clean_audio"] = _rewrite_preview_paths_in_value(
+            clean, working, allow_overwrite=allow_overwrite
+        )
+
+    state["main_prepped"] = promoted_prep
+    if choice == "forced_offset":
+        state["main_prepped_forced_offset"] = promoted_prep
+
+    note = "Reused Fast Preview prepped files (source shorter than 5 minutes)."
+    mark_step(
+        state,
+        "06_conversation_sync",
+        title="Conversation-sync",
+        status="completed",
+        note=note,
+        output=state.get("main_combined_audio"),
+    )
+    mark_step(
+        state,
+        "07_deroom_placeholder",
+        title="Clean audio selection",
+        status="completed",
+        note=note,
+        main_clean_audio=state.get("main_clean_audio"),
+    )
+    mark_step(
+        state,
+        "08_video_sync",
+        title="Video-sync (main)",
+        status="completed",
+        note=note,
+        **(promoted_prep if isinstance(promoted_prep, dict) else {}),
+    )
+    mark_step(
+        state,
+        "09_transcribe",
+        title="Transcribe prepped WAV",
+        status="completed",
+        note=note,
+        transcript_json=state.get("main_transcript_json"),
+    )
+    mark_step(
+        state,
+        "10_one_min_test",
+        title="Podcast autocut 1-min test",
+        status="skipped",
+        note="Skipped — Fast Preview approval recorded.",
+    )
+    mark_step(
+        state,
+        "11_one_min_approval",
+        title="1-min test approval",
+        status="completed",
+        from_fast_preview=True,
+        reused_preview_prepped=True,
+    )
+    state["resume_at"] = "13_full_render"
+    if isinstance(fp, dict):
+        fp["promoted_to_canonical"] = True
+        fp["promoted_at"] = utc_now_iso()
+    from harness_av_sync_lib import write_canonical_main_segments
+
+    write_canonical_main_segments(state)
+    save_piab_state(working, state)
+    return {
+        "main_prepped": promoted_prep,
+        "main_transcript_json": state.get("main_transcript_json"),
+        "reused_preview_prepped": True,
+        "forced_only": choice == "forced_offset",
+    }
+
+
 def preview_one_min_output_names() -> tuple[str, str, str]:
     return PREVIEW_ONE_MIN_DEFAULT, PREVIEW_ONE_MIN_NO_OFFSET, PREVIEW_ONE_MIN_FORCED_OFFSET
 
@@ -287,6 +526,45 @@ def _row_start_sec(row: dict[str, Any]) -> float | None:
             except (TypeError, ValueError):
                 continue
     return None
+
+
+def _row_end_sec(row: dict[str, Any]) -> float | None:
+    words = row.get("words") or []
+    if words:
+        last = words[-1]
+        for key in ("end", "end_time", "start", "start_time"):
+            if key in last:
+                try:
+                    return float(last[key])
+                except (TypeError, ValueError):
+                    continue
+    for key in ("end", "end_time", "end_sec"):
+        if key in row:
+            try:
+                return float(row[key])
+            except (TypeError, ValueError):
+                continue
+    return _row_start_sec(row)
+
+
+def _shift_time_fields(payload: dict[str, Any], origin: float) -> None:
+    for key in ("start", "end", "start_time", "end_time", "start_sec", "end_sec"):
+        if key not in payload:
+            continue
+        try:
+            payload[key] = max(0.0, float(payload[key]) - origin)
+        except (TypeError, ValueError):
+            continue
+
+
+def _rebase_transcript_row(row: dict[str, Any], origin: float) -> None:
+    _shift_time_fields(row, origin)
+    words = row.get("words") or []
+    if not isinstance(words, list):
+        return
+    for word in words:
+        if isinstance(word, dict):
+            _shift_time_fields(word, origin)
 
 
 def find_start_phrase_time_sec(
@@ -392,6 +670,9 @@ def should_use_tail_preview(
     prepped_duration_sec: float,
     state: dict | None = None,
 ) -> tuple[bool, str]:
+    source_sec = short_source_duration_from_state(state)
+    if is_short_source_duration(source_sec):
+        return True, "source_shorter_than_5min"
     start_sec = find_start_phrase_time_sec(simplified_json, state=state)
     if start_sec is None:
         return True, "start_phrase_missing"
@@ -409,8 +690,14 @@ def slice_simplified_transcript_last_seconds(
     output_path: Path,
     window_sec: float = 60.0,
     media_duration_sec: float,
-) -> Path:
-    """Keep transcript rows overlapping the last ``window_sec`` of prepped media."""
+) -> tuple[Path, float]:
+    """Keep the last ``window_sec`` of prepped media and rebase times to 0.
+
+    The renderer always starts the first clip at timeline 0. Leaving absolute
+    timestamps (e.g. 240–300s) makes that first clip run from 0 to ~4 minutes
+    with no camera cuts. Rebasing plus media offsets treats the tail as a
+    normal 60s source.
+    """
     original = json.loads(simplified_json.read_text(encoding="utf-8"))
     rows = _load_simplified_rows(simplified_json)
     window_start = max(0.0, media_duration_sec - window_sec)
@@ -431,12 +718,31 @@ def slice_simplified_transcript_last_seconds(
             if not filtered:
                 continue
             row_copy["words"] = filtered
+            row_copy["start"] = float(
+                filtered[0].get("start", filtered[0].get("start_time", window_start))
+            )
+            last = filtered[-1]
+            row_copy["end"] = float(
+                last.get("end", last.get("end_time", last.get("start", row_copy["start"])))
+            )
+            _rebase_transcript_row(row_copy, window_start)
             kept.append(row_copy)
             continue
 
         start = _row_start_sec(row_copy)
-        if start is not None and start >= window_start - 0.05:
-            kept.append(row_copy)
+        end = _row_end_sec(row_copy)
+        if end is not None and end <= window_start - 0.05:
+            continue
+        if start is not None and start >= media_duration_sec:
+            continue
+        if start is None and end is None:
+            continue
+        if start is not None:
+            row_copy["start"] = max(start, window_start)
+        if end is not None:
+            row_copy["end"] = end
+        _rebase_transcript_row(row_copy, window_start)
+        kept.append(row_copy)
 
     if not kept:
         raise ValueError(
@@ -451,7 +757,7 @@ def slice_simplified_transcript_last_seconds(
     else:
         payload = {str(i): row for i, row in enumerate(kept)}
     output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    return output_path
+    return output_path, window_start
 
 
 def prepped_anchor_duration_sec(prep: dict[str, Any]) -> float:
@@ -553,8 +859,9 @@ def render_preview_one_min_test(
     )
     preview_render_mode = "tail_autocut" if use_tail else "head_autocut"
 
+    media_origin = 0.0
     if use_tail:
-        slice_simplified_transcript_last_seconds(
+        _, media_origin = slice_simplified_transcript_last_seconds(
             simplified,
             output_path=dsl_source,
             window_sec=60.0,
@@ -572,12 +879,12 @@ def render_preview_one_min_test(
         segment_id,
         {
             "audio_file": str(audio_wav),
-            "audio_offset": 0,
+            "audio_offset": media_origin,
             "enable_color_match": False,
             "video_files": {
-                "speaker_0": {"file": str(ben), "offset": 0},
-                "speaker_1": {"file": str(guest), "offset": 0},
-                "wide": {"file": str(wide), "offset": 0},
+                "speaker_0": {"file": str(ben), "offset": media_origin},
+                "speaker_1": {"file": str(guest), "offset": media_origin},
+                "wide": {"file": str(wide), "offset": media_origin},
             },
             "transcript_file": str(dsl_input),
         },

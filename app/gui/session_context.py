@@ -25,6 +25,7 @@ class SessionContext:
     failure_detail: str | None = None
     failure_retry_screen: str | None = None
     failure_aborted: bool = False
+    clean_return_screen: str | None = None
 
     def reset(self, *, entry_path: str) -> None:
         self.entry_path = entry_path
@@ -42,3 +43,4 @@ class SessionContext:
         self.failure_detail = None
         self.failure_retry_screen = None
         self.failure_aborted = False
+        self.clean_return_screen = None

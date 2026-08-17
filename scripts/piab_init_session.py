@@ -15,6 +15,7 @@ from harness_overwrite_guard import HarnessOverwriteError, OVERWRITE_EXIT_CODE, 
 from harness_delivery_prompt import delivery_from_cli, merge_delivery_into_state
 from piab_lib import (
     DEFAULT_SCAN_ROOT,
+    DEFAULT_WORK_ROOT,
     MediaInfo,
     collect_session_scan,
     ensure_subfolders,
@@ -71,7 +72,18 @@ def main() -> int:
         choices=("default", "special"),
         help="default: create/use a subfolder under --root. special: use --working-folder.",
     )
-    parser.add_argument("--root", type=Path, default=DEFAULT_SCAN_ROOT)
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=DEFAULT_WORK_ROOT,
+        help="Folder that will contain the new session subfolder (default mode).",
+    )
+    parser.add_argument(
+        "--scan-root",
+        type=Path,
+        default=DEFAULT_SCAN_ROOT,
+        help="Folder to scan for MultiCorder dumps in default mode.",
+    )
     parser.add_argument(
         "--date",
         type=date.fromisoformat,
@@ -118,6 +130,7 @@ def main() -> int:
             root=args.root,
             name=args.name,
             working_folder=args.working_folder,
+            scan_root=args.scan_root,
         )
 
         if working.exists() and any(working.iterdir()):

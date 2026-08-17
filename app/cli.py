@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from app.controller import PiabController
+from app.controller.paths import migrate_legacy_work_files
 
 
 def _print_json(data: object) -> None:
@@ -69,7 +70,7 @@ def cmd_resume(controller: PiabController, args: argparse.Namespace) -> int:
 
 def cmd_auto_name(controller: PiabController, args: argparse.Namespace) -> int:
     name = controller.generate_session_name()
-    path = controller.scan_root / name
+    path = controller.work_root / name
     if args.json:
         _print_json({"name": name, "path": str(path)})
     else:
@@ -247,6 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    migrate_legacy_work_files()
     controller = PiabController()
 
     handlers = {

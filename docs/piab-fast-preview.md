@@ -4,9 +4,9 @@ Speed up the path to the 1-minute approval gate for long interviews by running p
 300-second head clips in an isolated sandbox, recording user choices, then running full
 prep + full render on `Raw/` without a second 1-minute review.
 
-**Applies when:** max duration of the three labeled **video** files is **> 10 minutes**.
+**Applies when:** every labeled session. Full-length `Input/` files are not created until after 1-minute approval.
 
-**Unchanged when:** max video duration ≤ 10 minutes — existing full prep → F2/F2a → F3 → F4 flow.
+**Short sources:** if max labeled video is **&lt; 5 minutes**, the 1-minute review uses the **last 60 seconds** (same as missing Start Phrase). After approval, preview prepped files are **promoted** to canonical `Input/` (no second sync/transcribe).
 
 ---
 
@@ -57,7 +57,7 @@ Session-level folders (`Raw/`, `Input/`, `Temp/`, `Output/`) are **untouched** u
 
 ## Phase 1 — Create preview sources
 
-**Trigger:** After labeling completes (D4), if `max(host_video, guest_video, wide_video) > 600s`.
+**Trigger:** After labeling completes (D4), for every session.
 
 **Script:** `scripts/piab_create_preview_clips.py` (new)
 
@@ -130,7 +130,7 @@ Switch to **tail autocut** if **any** of:
 ### Tail mode behavior
 
 - Window = last **60 seconds** of prepped preview timeline (wall-clock on prepped MP4/WAV)
-- Slice transcript to that window
+- Slice transcript to that window and **rebase times to 0**; set segment audio/video offsets to the window start so the tail is a normal 60s source
 - Run **`generate_full_dsl.py`** with normal Host/Guest/Wide cutting rules
 - **Skip** start/end/pause phrase gates (conversation sample only)
 - Render up to 60s of that DSL

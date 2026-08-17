@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.controller.fast_preview import full_after_preview_pending
+
 RESUME_AT_TO_SCREEN: dict[str, str] = {
     "01_scan_confirm": "C2a",
     "02_create_folder": "C3",
@@ -18,7 +20,8 @@ RESUME_AT_TO_SCREEN: dict[str, str] = {
     "08p_video_sync": "E1",
     "09p_transcribe": "E1",
     "10p_fast_preview_one_min": "E1",
-    "13_full_prep_after_preview": "E1",
+    "13_queued_full": "F4",
+    "13_full_prep_after_preview": "F4",
     "13_full_render": "F4",
     "13_output_transcripts": "F4",
     "13_delivery": "F4",
@@ -26,10 +29,13 @@ RESUME_AT_TO_SCREEN: dict[str, str] = {
     "11_one_min_approval": "F2",
     "12_estimate_full": "F3",
     "14_done": "F5",
+    "cleaned": "A1",
 }
 
 
-def resume_screen_for(resume_at: str | None) -> str:
+def resume_screen_for(resume_at: str | None, state: dict | None = None) -> str:
+    if state and full_after_preview_pending(state):
+        return "F4"
     if not resume_at:
         return "A1"
     return RESUME_AT_TO_SCREEN.get(resume_at, "A1")

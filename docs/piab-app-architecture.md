@@ -4,6 +4,7 @@ Standalone GUI for the Lighthaven walk-in podcast room. **Proof-of-concept:** on
 
 **Backend:** existing PIAB scripts in this repo (`scripts/piab_*.py`, harness helpers).  
 **Frontend:** PySide6 wizard in a single window.  
+**App repo:** `E:\PodcastRoom\PodcastInABox`. Session files, the process log, job queue, and app lock live in `E:\PodcastRoom\PodcastInABox\Sessions`.  
 **Fallback pipeline (unchanged):** `E:\PodcastRoom\Cursor\automated-video-editing` @ `lighthaven-podcast-in-a-box`.
 
 ---
@@ -87,7 +88,7 @@ The controller exposes a CLI (same API the GUI uses):
 ```powershell
 python -m app.cli preflight
 python -m app.cli sessions
-python -m app.cli resume --folder "E:\PodcastRoom\2026-07-28_1545"
+python -m app.cli resume --folder "E:\PodcastRoom\PodcastInABox\Sessions\2026-07-28_1545"
 python -m app.cli auto-name
 python -m app.cli check-overwrite --folder "..." --action run_prep
 python -m app.cli start-prep --folder "..." --wait
@@ -117,7 +118,7 @@ python -m unittest discover -s tests -v
 ### Auto-name rule
 
 - Format: `YYYY-MM-DD_HHMM` (local time), e.g. `2026-07-28_1545`
-- Created under `E:\PodcastRoom\<auto-name>\` (default mode)
+- Created under `E:\PodcastRoom\PodcastInABox\Sessions\<auto-name>\` (default mode)
 - Special folder: user-supplied path **is** the session folder (existing layout)
 
 ---
@@ -155,8 +156,8 @@ Each screen is one page in a `QStackedWidget`. **Screen ID** is used by the GUI 
 | Screen ID | Title | Purpose |
 |-----------|-------|---------|
 | **A0** | Preflight | Prerequisites checklist (see [Preflight](#preflight)) |
-| **A1** | Welcome | **New session** / **Resume session** |
-| **A2** | Resume — pick session | Recent `E:\PodcastRoom\*\podcast-in-a-box.json` + **Browse…** |
+| **A1** | Welcome | **New session** / **Resume session**. Autocut queue plus **On hold** (jobs removed from auto-process; **Resume** puts them back). |
+| **A2** | Resume — pick session | Recent PIAB folders that still have `Raw/` + **Browse…**. `Preview Files/` alone is not enough. |
 | **A3** | New — record or autocut? | **Record now** / **Already recorded** |
 
 ### Tier B — Recording flow
@@ -199,7 +200,7 @@ If special folder already contains `podcast-in-a-box.json`, treat as **Resume** 
 
 | Screen ID | Title | Maps to `resume_at` (internal) |
 |-----------|-------|--------------------------------|
-| **E1** | Processing… | `06` … `10` while `piab_run_prep.py` runs — **Abort** available |
+| **E1** | Processing… | `06` … `10` while `piab_run_prep.py` runs — **Abort** available. If waiting in queue: **Hold Outside Queue** parks the job (no auto-start). |
 
 User-visible substep labels:
 
@@ -218,10 +219,12 @@ Poll `podcast-in-a-box.json` (`steps`, `resume_at`) and `Temp/harness-FAILURE.js
 | Screen ID | Title | Maps to `resume_at` |
 |-----------|-------|---------------------|
 | **F1** | Something went wrong | Failed step / abort |
+
+On any autocut step failure (prep, Fast Preview, or full render): an application-modal popup says the autocut failed and a bug report was submitted, and that original files are safe. `notify_harness_failure` also emails **embrodski@gmail.com** with subject **PIAB autocut error** and that session’s process-log row plus `Temp/harness-FAILURE.txt`. User abort and overwrite-blocked (files already exist) do not send a bug report.
 | **F2a** | Sync offset A/B choice | `10a_sync_offset_approval` — side-by-side players |
 | **F2** | Review 1-minute test | `11_one_min_approval` |
 | **F3** | Estimate B | `12_estimate_full` |
-| **F4** | Rendering full interview… | `13_full_render` — **Abort** available |
+| **F4** | Rendering full interview… | `13_full_render` — **Abort** available. If waiting in queue: **Hold Outside Queue**. |
 | **F5** | Done | `14_done` |
 
 **F2 actions:**
@@ -238,7 +241,7 @@ Always show session folder path.
 
 | Delivery | Message |
 |----------|---------|
-| Email yes | “Check your email at …” + files in `E:\PodcastRoom\<name>` |
+| Email yes | “Check your email at …” + files in `E:\PodcastRoom\PodcastInABox\Sessions\<name>` |
 | Email no | Path to `Output\Full Interview.mp4` + memory-stick reminder |
 | Recording only (**B6**) | Files in `E:\PodcastRoom` (no session folder) |
 
@@ -253,6 +256,8 @@ Always show session folder path.
 ---
 
 ## Resume router
+
+A session is resumable only when `podcast-in-a-box.json` has `kind=podcast_in_a_box`, `resume_at` is not `cleaned`, and **`Raw/` is still on disk**. After Clean Old Working Files, Resume hides the folder; Force new is the only option.
 
 | `resume_at` | Open screen |
 |-------------|-------------|
@@ -316,7 +321,8 @@ controller.busy_reasons() -> list[str]  # e.g. ["recording"], ["prep"]
 
 | Layer | Mechanism |
 |-------|-----------|
-| App singleton | Lock file e.g. `E:\PodcastRoom\.piab-app.lock` (PID + timestamp) |
+| App singleton | Lock file e.g. `E:\PodcastRoom\PodcastInABox\Sessions\.piab-app.lock` (PID + timestamp) |
+| Process log | `E:\PodcastRoom\PodcastInABox\Sessions\piab-process-log.json` — one row per autocut session (begun time, email, folder/subfolders, completed steps, Frame.io upload, delivery email) |
 | Recording lock | Controller `recording_active` + vMix MultiCorder state |
 | UI | **A1** shows banner if recording in progress; refuse second **start_recording** |
 

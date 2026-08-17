@@ -27,8 +27,8 @@ from harness_video_sync import find_scope_videos, run_video_sync
 from piab_fast_preview_lib import (
     apply_preview_paths_to_state,
     create_preview_clips,
-    fast_preview_eligible,
     render_preview_one_min_test,
+    restore_canonical_paths,
 )
 from piab_lib import load_piab_state, mark_step, print_json, save_piab_state
 
@@ -63,10 +63,8 @@ def run_fast_preview_prep(
 ) -> dict:
     working = working.resolve()
     state = load_piab_state(working)
-    canonical_raw = Path(state["paths"]["raw"])
-
-    if not fast_preview_eligible(canonical_raw):
-        raise ValueError("Session is not eligible for Fast Preview (>10 min max video).")
+    restore_canonical_paths(state)
+    save_piab_state(working, state)
 
     if create_clips or not (working / "Preview Files").is_dir():
         create_preview_clips(working, allow_overwrite=allow_overwrite)

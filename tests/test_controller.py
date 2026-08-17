@@ -19,10 +19,13 @@ from app.controller.prep_progress import prep_needs_resume, read_prep_progress
 from app.controller.failure_info import read_failure_info, retry_screen_for_failure
 from app.controller.flag_report import load_flag_report_text
 from app.controller.render_progress import read_render_progress
+from app.controller.paths import migrate_legacy_work_files
 from app.controller.session_store import (
     existing_state_conflict,
     generate_session_name,
     is_resumable_piab_session,
+    list_recent_sessions,
+    remember_session_folder,
 )
 
 
@@ -31,10 +34,22 @@ class ResumeRouterTests(unittest.TestCase):
         self.assertEqual(resume_screen_for("09_transcribe"), "E1")
         self.assertEqual(resume_screen_for("10a_sync_offset_approval"), "F2a")
         self.assertEqual(resume_screen_for("11_one_min_approval"), "F2")
+        self.assertEqual(resume_screen_for("13_queued_full"), "F4")
+        self.assertEqual(resume_screen_for("13_full_prep_after_preview"), "F4")
         self.assertEqual(resume_screen_for("14_done"), "F5")
+        self.assertEqual(resume_screen_for("cleaned"), "A1")
 
     def test_unknown_defaults_to_home(self) -> None:
         self.assertEqual(resume_screen_for("unknown_step"), "A1")
+
+    def test_full_prep_after_preview_approval_goes_to_final(self) -> None:
+        state = {
+            "resume_at": "06_conversation_sync",
+            "fast_preview_approval": {"approved_at": "2026-08-13T23:58:42+00:00"},
+            "steps": {},
+        }
+        self.assertEqual(resume_screen_for("06_conversation_sync", state=state), "F4")
+        self.assertEqual(resume_screen_for("06_conversation_sync"), "E1")
 
 
 class OverwriteTests(unittest.TestCase):
@@ -113,6 +128,62 @@ class PrepProgressTests(unittest.TestCase):
             self.assertIn("1-minute", progress.current_label)
             self.assertTrue(progress.step_lines[0].startswith("✓"))
             self.assertTrue(progress.step_lines[-1].startswith("→"))
+
+
+class WorkRootTests(unittest.TestCase):
+    def test_migrate_legacy_work_files_moves_log_and_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = Path(tmp) / "PodcastRoom"
+            work = Path(tmp) / "PodcastRoom" / "PodcastInABox"
+            legacy.mkdir()
+            (legacy / "piab-process-log.json").write_text("{\"kind\": \"piab_process_log\"}", encoding="utf-8")
+            (legacy / "piab-job-queue.json").write_text("{\"full\": []}", encoding="utf-8")
+            migrate_legacy_work_files(
+                legacy_root=legacy,
+                work_root=work,
+                extra_legacy_roots=(),
+            )
+            self.assertTrue((work / "piab-process-log.json").is_file())
+            self.assertTrue((work / "piab-job-queue.json").is_file())
+            self.assertFalse((legacy / "piab-process-log.json").exists())
+            self.assertFalse((legacy / "piab-job-queue.json").exists())
+
+    def test_migrate_legacy_work_files_keeps_existing_dest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = Path(tmp) / "old"
+            work = Path(tmp) / "new"
+            legacy.mkdir()
+            work.mkdir()
+            (legacy / "piab-process-log.json").write_text("old", encoding="utf-8")
+            (work / "piab-process-log.json").write_text("new", encoding="utf-8")
+            migrate_legacy_work_files(legacy_root=legacy, work_root=work)
+            self.assertEqual(
+                (work / "piab-process-log.json").read_text(encoding="utf-8"),
+                "new",
+            )
+            self.assertTrue((legacy / "piab-process-log.json").is_file())
+
+    def test_migrate_legacy_work_files_from_app_home_into_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            scan = Path(tmp) / "PodcastRoom"
+            home = scan / "PodcastInABox"
+            sessions = home / "Sessions"
+            scan.mkdir()
+            home.mkdir()
+            (home / "piab-process-log.json").write_text("from-home", encoding="utf-8")
+            (home / ".piab-app.lock").write_text("lock", encoding="utf-8")
+            migrate_legacy_work_files(
+                legacy_root=scan,
+                work_root=sessions,
+                extra_legacy_roots=(home,),
+            )
+            self.assertEqual(
+                (sessions / "piab-process-log.json").read_text(encoding="utf-8"),
+                "from-home",
+            )
+            self.assertTrue((sessions / ".piab-app.lock").is_file())
+            self.assertFalse((home / "piab-process-log.json").exists())
+            self.assertFalse((home / ".piab-app.lock").exists())
 
 
 class SessionNameTests(unittest.TestCase):
@@ -234,8 +305,83 @@ class JobRunnerTests(unittest.TestCase):
                 cwd=Path.cwd(),
             )
 
+    def test_allows_fast_preview_alongside_full(self) -> None:
+        runner = JobRunner()
+        runner.register_job("full_after_preview")
+        job = runner.register_job("fast_preview")
+        self.assertEqual(job.kind, "fast_preview")
+        self.assertEqual(runner.running_full_count(), 1)
+        self.assertEqual(runner.running_fast_preview_count(), 1)
+
+    def test_poll_reports_quick_exit_without_deadlock(self) -> None:
+        import time
+
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as handle:
+            handle.write("raise SystemExit(3)\n")
+            script = Path(handle.name)
+
+        runner = JobRunner()
+        try:
+            job = runner.start_script("full_after_preview", script, [], cwd=Path.cwd())
+            deadline = time.time() + 5.0
+            finished = []
+            while time.time() < deadline and not finished:
+                finished = runner.poll()
+                if not finished:
+                    time.sleep(0.05)
+            self.assertTrue(finished)
+            self.assertEqual(finished[0].id, job.id)
+            self.assertEqual(finished[0].status, "failed")
+            self.assertEqual(runner.poll(), [])
+        finally:
+            script.unlink(missing_ok=True)
+
 
 class ControllerTests(unittest.TestCase):
+    def test_hold_and_resume_held_job(self) -> None:
+        from app.controller.job_queue import JobQueueStore
+        from app.controller.types import Job
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = AppLock(Path(tmp) / "lock.json")
+            lock.acquire()
+            queue = JobQueueStore(Path(tmp) / "queue.json")
+            folder = Path(tmp) / "sess"
+            folder.mkdir()
+            queue.enqueue(folder, "full", name="S")
+            controller = PiabController(lock=lock, jobs=JobRunner(), job_queue=queue)
+            self.assertTrue(controller.hold_queued_job(folder, "full"))
+            self.assertEqual(controller.list_held_jobs()[0]["status"], "held")
+            self.assertFalse(controller.should_confirm_close_program())
+            fake = Job(id="abc", kind="full_after_preview", session_folder=folder)
+            with patch.object(
+                controller, "_start_full_lane_job", return_value=fake
+            ) as started:
+                job = controller.resume_held_job(folder, "full")
+            started.assert_called_once()
+            self.assertIs(job, fake)
+            entry = queue.entry_for(folder, "full")
+            self.assertIsNotNone(entry)
+            assert entry is not None
+            self.assertEqual(entry.status, "queued")
+            self.assertEqual(queue.held(), [])
+
+    def test_close_program_confirm_only_when_running_or_queued(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = AppLock(Path(tmp) / "lock.json")
+            lock.acquire()
+            from app.controller.job_queue import JobQueueStore
+
+            queue = JobQueueStore(Path(tmp) / "queue.json")
+            controller = PiabController(lock=lock, jobs=JobRunner(), job_queue=queue)
+            self.assertFalse(controller.should_confirm_close_program())
+            folder = Path(tmp) / "sess"
+            folder.mkdir()
+            queue.enqueue(folder, "full", name="S")
+            self.assertTrue(controller.should_confirm_close_program())
+            queue.mark_failed(folder, "full")
+            self.assertFalse(controller.should_confirm_close_program())
+
     def test_busy_when_recording_lock_set(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             lock = AppLock(Path(tmp) / "lock.json")
@@ -243,6 +389,93 @@ class ControllerTests(unittest.TestCase):
             lock.set_recording_active(True)
             controller = PiabController(lock=lock, jobs=JobRunner())
             self.assertIn("recording", controller.busy_reasons())
+
+    def test_resume_screen_uses_preview_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            state = {
+                "kind": "podcast_in_a_box",
+                "name": "demo",
+                "resume_at": "06_conversation_sync",
+                "fast_preview_approval": {"approved_at": "2026-08-13T23:58:42+00:00"},
+                "last_abort": {"message": "Aborted by user."},
+                "steps": {
+                    "06_conversation_sync": {
+                        "id": "06_conversation_sync",
+                        "status": "in_progress",
+                    }
+                },
+            }
+            (folder / "podcast-in-a-box.json").write_text(
+                json.dumps(state), encoding="utf-8"
+            )
+            controller = PiabController()
+            self.assertEqual(controller.resume_screen_for(folder), "F4")
+            self.assertTrue(controller.resume_full_needs_overwrite(folder))
+
+    def test_resume_screen_shows_failure_when_marker_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            state = {
+                "kind": "podcast_in_a_box",
+                "name": "demo",
+                "resume_at": "12_estimate_full",
+                "fast_preview_approval": {"approved_at": "2026-08-13T23:58:42+00:00"},
+                "steps": {
+                    "13_full_render": {
+                        "id": "13_full_render",
+                        "status": "failed",
+                    }
+                },
+            }
+            (folder / "podcast-in-a-box.json").write_text(
+                json.dumps(state), encoding="utf-8"
+            )
+            temp = folder / "Temp"
+            temp.mkdir()
+            (temp / "harness-FAILURE.json").write_text(
+                json.dumps(
+                    {
+                        "pipeline": "piab_full_render",
+                        "step_id": "13_full_render",
+                        "error_summary": "Unknown segment: main",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            controller = PiabController()
+            self.assertEqual(controller.resume_screen_for(folder), "F1")
+            info = read_failure_info(folder, state)
+            self.assertEqual(info.retry_screen, "F4")
+
+    def test_start_next_queued_recovers_stale_running(self) -> None:
+        from app.controller.job_queue import JobQueueStore
+        from app.controller.types import Job
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "sess"
+            folder.mkdir()
+            (folder / "podcast-in-a-box.json").write_text(
+                json.dumps(
+                    {
+                        "name": "sess",
+                        "resume_at": "06_conversation_sync",
+                        "fast_preview_approval": {"approved_at": "x"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = JobQueueStore(Path(tmp) / "queue.json")
+            store.enqueue(folder, "full", name="sess")
+            store.mark_running(folder, "full")
+            controller = PiabController(job_queue=store, jobs=JobRunner())
+            fake = Job(id="abc", kind="full_after_preview", session_folder=folder)
+            with patch.object(
+                controller, "_start_full_lane_job", return_value=fake
+            ) as started:
+                job = controller.start_next_queued("full", allow_overwrite=True)
+            started.assert_called_once()
+            self.assertIs(job, fake)
 
     def test_check_overwrite_blocks_prep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -458,12 +691,112 @@ class SessionStoreTests(unittest.TestCase):
     def test_is_resumable_piab_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
+            (folder / "Raw").mkdir()
             state_path = folder / "podcast-in-a-box.json"
             state_path.write_text(
                 json.dumps({"kind": "podcast_in_a_box", "resume_at": "03_label_videos"}),
                 encoding="utf-8",
             )
             self.assertTrue(is_resumable_piab_session(folder))
+
+    def test_not_resumable_without_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / "Preview Files").mkdir()
+            (folder / "Output").mkdir()
+            (folder / "podcast-in-a-box.json").write_text(
+                json.dumps({"kind": "podcast_in_a_box", "resume_at": "11_one_min_approval"}),
+                encoding="utf-8",
+            )
+            self.assertFalse(is_resumable_piab_session(folder))
+            conflict = existing_state_conflict(folder)
+            self.assertIsNotNone(conflict)
+            self.assertIn("Clean Old Working Files", conflict)
+
+    def test_not_resumable_after_clean_stamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / "Raw").mkdir()
+            (folder / "podcast-in-a-box.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "podcast_in_a_box",
+                        "resume_at": "cleaned",
+                        "working_files_cleaned_at": "2026-08-15T22:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertFalse(is_resumable_piab_session(folder))
+
+    def test_list_recent_sessions_hides_finished(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            done = root / "Test"
+            done.mkdir()
+            (done / "Raw").mkdir()
+            (done / "podcast-in-a-box.json").write_text(
+                json.dumps({"kind": "podcast_in_a_box", "resume_at": "14_done"}),
+                encoding="utf-8",
+            )
+            open_session = root / "Open"
+            open_session.mkdir()
+            (open_session / "Raw").mkdir()
+            (open_session / "podcast-in-a-box.json").write_text(
+                json.dumps({"kind": "podcast_in_a_box", "resume_at": "11_one_min_approval"}),
+                encoding="utf-8",
+            )
+            self.assertTrue(is_resumable_piab_session(done))
+            self.assertFalse(is_resumable_piab_session(done, include_finished=False))
+            self.assertEqual(
+                list_recent_sessions(root, include_process_log=False),
+                [open_session.resolve()],
+            )
+
+    def test_list_recent_sessions_requires_raw(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            keep = root / "Keep"
+            keep.mkdir()
+            (keep / "Raw").mkdir()
+            (keep / "podcast-in-a-box.json").write_text(
+                json.dumps({"kind": "podcast_in_a_box", "resume_at": "11_one_min_approval"}),
+                encoding="utf-8",
+            )
+            drop = root / "Drop"
+            drop.mkdir()
+            (drop / "Preview Files").mkdir()
+            (drop / "podcast-in-a-box.json").write_text(
+                json.dumps({"kind": "podcast_in_a_box", "resume_at": "11_one_min_approval"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                list_recent_sessions(root, include_process_log=False),
+                [keep.resolve()],
+            )
+
+    def test_list_recent_sessions_includes_logged_special_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "PodcastInABox"
+            other = Path(tmp) / "My Audio" / "Special"
+            work.mkdir()
+            other.mkdir(parents=True)
+            (other / "Raw").mkdir()
+            (other / "Input").mkdir()
+            (other / "podcast-in-a-box.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "podcast_in_a_box",
+                        "name": "Special",
+                        "resume_at": "03_label_videos",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            log_path = work / "piab-process-log.json"
+            remember_session_folder(other, log_path=log_path)
+            found = list_recent_sessions(work, log_path=log_path)
+            self.assertEqual(found, [other.resolve()])
 
     def test_harness_state_is_not_resumable_piab(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

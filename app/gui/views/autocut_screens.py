@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.controller.paths import DEFAULT_SCAN_ROOT
+from app.controller.paths import DEFAULT_SCAN_ROOT, DEFAULT_WORK_ROOT
 from app.controller.session_store import (
     PIAB_STATE_FILENAME,
     existing_state_conflict,
@@ -218,12 +218,16 @@ class SourceLocationScreen(ScreenWidget):
         layout.addWidget(self._special)
 
         special_row = QHBoxLayout()
+        special_row.setContentsMargins(28, 0, 0, 0)
+        self._browse = QPushButton("Browse…")
+        self._browse.clicked.connect(self._browse_folder)
         self._folder_label = body_label("(none selected)")
-        browse = QPushButton("Browse…")
-        browse.clicked.connect(self._browse)
+        special_row.addWidget(self._browse)
         special_row.addWidget(self._folder_label, stretch=1)
-        special_row.addWidget(browse)
         layout.addLayout(special_row)
+
+        self._special.toggled.connect(self._sync_browse_enabled)
+        self._sync_browse_enabled()
 
         layout.addStretch()
 
@@ -243,6 +247,9 @@ class SourceLocationScreen(ScreenWidget):
         self._continue_btn = cont
         self._scan_worker: CallableWorker | None = None
         self._scan_dialog: QProgressDialog | None = None
+
+    def _sync_browse_enabled(self) -> None:
+        self._browse.setEnabled(self._special.isChecked())
 
     def _select_special_folder(self, folder: Path, *, force_new: bool = False) -> None:
         self._special.setChecked(True)
@@ -300,7 +307,7 @@ class SourceLocationScreen(ScreenWidget):
             return
         # choose_different: stay on this screen; folder is not selected.
 
-    def _browse(self) -> None:
+    def _browse_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(
             self,
             "Select folder with MultiCorder files",
@@ -388,6 +395,7 @@ class SourceLocationScreen(ScreenWidget):
             self._default.setChecked(True)
             self._special_folder = None
             self._folder_label.setText("(none selected)")
+        self._sync_browse_enabled()
 
 
 class ConfirmSourceScreen(ScreenWidget):
@@ -547,7 +555,7 @@ class SessionNameScreen(ScreenWidget):
         layout.addWidget(heading_label("Name session folder"))
         layout.addWidget(
             body_label(
-                f"A new folder will be created under:\n{DEFAULT_SCAN_ROOT}"
+                f"A new folder will be created under:\n{DEFAULT_WORK_ROOT}"
             )
         )
 
@@ -612,7 +620,7 @@ class SessionNameScreen(ScreenWidget):
                     "Use a single folder name without path separators.",
                 )
                 return
-            target = self.controller.scan_root / name
+            target = self.controller.work_root / name
             if target.is_dir() and (target / PIAB_STATE_FILENAME).is_file():
                 if confirm_action(
                     self,
@@ -717,7 +725,7 @@ class CreateSessionScreen(ScreenWidget):
             return ctx.special_folder.resolve()
         name = ctx.session_name or self.controller.generate_session_name()
         ctx.session_name = name
-        return (self.controller.scan_root / name).resolve()
+        return (self.controller.work_root / name).resolve()
 
     def _init_session(self, ctx: SessionContext) -> Path:
         folder = self._planned_folder(ctx)

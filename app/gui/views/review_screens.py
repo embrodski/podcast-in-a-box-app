@@ -16,13 +16,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.controller.prep_progress import failure_summary
-from app.gui.dialogs import confirm_action
+from app.controller.prep_progress import clear_prep_failure, failure_summary
+from app.controller.storage_gate import assess_render_storage
+from app.gui.dialogs import confirm_action, confirm_hold_outside_queue
 from app.gui.failure_context import navigate_to_failure
+from app.gui.storage_prompts import gate_low_disk, maybe_offer_clean_on_disk_failure
 from app.gui.widgets.path_banner import PathBanner
 from app.gui.widgets.screen_base import ScreenWidget
 from app.gui.widgets.selectable_text import body_label, heading_label
-from app.gui.widgets.video_playback import MediaTimelineControls, SingleVideoReviewPane
+from app.gui.widgets.video_playback import (
+    MediaTimelineControls,
+    SingleVideoReviewPane,
+    close_media_player,
+)
 from app.gui.widgets.worker import CallableWorker
 
 
@@ -157,6 +163,13 @@ class SyncOffsetReviewScreen(ScreenWidget):
         self._player_left.setSource(QUrl.fromLocalFile(str(no_path)))
         self._player_right.setSource(QUrl.fromLocalFile(str(forced_path)))
 
+    def on_leave(self) -> None:
+        close_media_player(self._player_left)
+        close_media_player(self._player_right)
+        self._timeline.reset()
+        self._play_left.setText("Play left")
+        self._play_right.setText("Play right")
+
     def _toggle(self, player: QMediaPlayer, button: QPushButton) -> None:
         if player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             player.pause()
@@ -283,6 +296,9 @@ class OneMinReviewScreen(ScreenWidget):
         self._status.setText(f"Preview: {self._video_path.name}")
         self._playback.set_source(self._video_path)
 
+    def on_leave(self) -> None:
+        self._playback.close_source()
+
     def _set_actions_enabled(self, enabled: bool) -> None:
         self._actions.setEnabled(enabled)
         self._playback.set_controls_enabled(enabled)
@@ -293,16 +309,17 @@ class OneMinReviewScreen(ScreenWidget):
             return
 
         def _on_ok(state: dict) -> None:
-            if state.get("resume_at") == "13_full_prep_after_preview":
-                QMessageBox.information(
-                    self,
-                    "Starting full processing",
-                    "Starting full processing on the complete interview. "
-                    "This will take a while.",
-                )
-                self.navigate.emit("E1")
+            folder_local = folder
+            try:
+                self.controller.request_full_job(folder_local)
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not queue full render", str(exc))
                 return
-            self.navigate.emit("F3")
+            window = self.window()
+            if hasattr(window, "handoff_to_final_render"):
+                window.handoff_to_final_render(folder_local)
+                return
+            self.navigate.emit("F4")
 
         self._run_worker(
             "Saving approval…",
@@ -518,10 +535,17 @@ class FullRenderScreen(ScreenWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        layout.addWidget(heading_label("Rendering full interview…"))
+        self._heading = heading_label("Rendering full interview…")
+        layout.addWidget(self._heading)
         self._timing = body_label("")
         self._timing.setStyleSheet("color: #94a3b8; font-size: 12px;")
         layout.addWidget(self._timing)
+        self._pace = body_label(
+            "Most projects take approximately 1 minute per minute of source video to complete."
+        )
+        self._pace.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        self._pace.hide()
+        layout.addWidget(self._pace)
         self._current = body_label("Starting…")
         layout.addWidget(self._current)
 
@@ -536,9 +560,19 @@ class FullRenderScreen(ScreenWidget):
 
         layout.addStretch()
 
+        self._home_hint = body_label(
+            "You can return to Home Screen while this is rendering in order to "
+            "start another recording"
+        )
+        layout.addWidget(self._home_hint)
+        self._return_home = QPushButton("Return to Home")
+        self._return_home.setMinimumHeight(40)
+        self._return_home.clicked.connect(self._return_to_home)
+        layout.addWidget(self._return_home)
+
         row = QHBoxLayout()
         self._home = QPushButton("Back to home")
-        self._home.clicked.connect(lambda: self.navigate.emit("A1"))
+        self._home.clicked.connect(self._return_to_home)
         self._home.hide()
         row.addWidget(self._home)
 
@@ -548,6 +582,11 @@ class FullRenderScreen(ScreenWidget):
         row.addWidget(self._retry)
 
         row.addStretch()
+
+        self._hold = QPushButton("Hold Outside Queue")
+        self._hold.clicked.connect(self._confirm_hold)
+        self._hold.hide()
+        row.addWidget(self._hold)
 
         self._abort = QPushButton("Abort")
         self._abort.clicked.connect(self._confirm_abort)
@@ -567,14 +606,20 @@ class FullRenderScreen(ScreenWidget):
             self._detail.setText("Go back and create or open a session first.")
             self._banner.set_path(None)
             self._abort.hide()
+            self._hold.hide()
             self._retry.hide()
             self._home.show()
+            self._home_hint.show()
+            self._return_home.show()
             return
 
         self._banner.set_path(folder)
         self._home.hide()
         self._retry.hide()
+        self._hold.hide()
         self._abort.show()
+        self._home_hint.show()
+        self._return_home.show()
         self._render_job_id = None
         self._starting = False
         self._local_step = None
@@ -586,6 +631,7 @@ class FullRenderScreen(ScreenWidget):
             self._current.setText("Could not read session state.")
             self._detail.setText(str(exc))
             self._abort.hide()
+            self._hold.hide()
             self._retry.show()
             return
 
@@ -594,24 +640,20 @@ class FullRenderScreen(ScreenWidget):
             self.navigate.emit("F5")
             return
 
-        if progress.failure:
-            existing = self.controller.find_running_render_job(folder)
-            if existing is None:
-                summary = failure_summary(progress.failure)
-                navigate_to_failure(
-                    self,
-                    summary=summary or "Full render failed.",
-                    retry_screen="F4",
-                    detail=progress.failure.get("error_detail")
-                    if isinstance(progress.failure.get("error_detail"), str)
-                    else None,
-                )
-                return
-
         existing = self.controller.find_running_render_job(folder)
         if existing is not None:
+            self._heading.setText("Rendering full interview…")
             self._render_job_id = existing.id
             self._refresh_ui(folder)
+            self._poll.start()
+            return
+
+        entry = self.controller.job_queue.entry_for(folder, "full")
+        if entry is not None and entry.status == "held":
+            self._show_held_state()
+            return
+        if entry is not None and entry.status == "queued":
+            self._show_queued_waiting()
             self._poll.start()
             return
 
@@ -625,18 +667,37 @@ class FullRenderScreen(ScreenWidget):
         folder = _session_folder(self)
         if folder is None or self._starting:
             return
+        held = self.controller.job_queue.entry_for(folder, "full")
+        if held is not None and held.status == "held":
+            self._show_held_state()
+            return
 
         ctx = self.context()
         allow_overwrite = ctx.allow_overwrite if ctx is not None else False
+        if not allow_overwrite and self.controller.resume_full_needs_overwrite(folder):
+            allow_overwrite = True
+
+        assessment = assess_render_storage(folder)
+        action = gate_low_disk(self, assessment, return_screen="F4")
+        if action == "go_clean":
+            return
+        if action == "abort":
+            self._current.setText("Full render not started — low disk space.")
+            self._detail.setText(assessment.message)
+            self._retry.show()
+            return
 
         self._starting = True
         self._retry.hide()
+        self._hold.hide()
         self._abort.show()
+        self._heading.setText("Rendering full interview…")
         self._current.setText("Starting full render…")
         self._detail.setText("This may take a while. Do not close the app.")
+        clear_prep_failure(folder)
 
         try:
-            job = self.controller.start_render(
+            job = self.controller.request_full_job(
                 folder,
                 allow_overwrite=allow_overwrite,
             )
@@ -658,6 +719,7 @@ class FullRenderScreen(ScreenWidget):
                     summary="Render blocked — files already exist.",
                     retry_screen="F4",
                     detail=message,
+                    report=False,
                 )
             else:
                 navigate_to_failure(
@@ -671,32 +733,108 @@ class FullRenderScreen(ScreenWidget):
         finally:
             self._starting = False
 
+        if job is None:
+            self._render_job_id = None
+            self._show_queued_waiting()
+            self._poll.start()
+            return
+
         self._render_job_id = job.id
         self._local_started = datetime.now().astimezone()
         self._refresh_ui(folder)
         self._poll.start()
 
+    def _show_queued_waiting(self) -> None:
+        self._heading.setText("Final Render Window")
+        self._current.setText(
+            "This autocut job is in queue, and will be processed in the order it was received."
+        )
+        self._detail.setText(
+            "The app will not create full-length prepped files until this job starts."
+        )
+        self._abort.setText("Abort")
+        self._hold.show()
+        self._abort.show()
+
+    def _show_held_state(self) -> None:
+        self._poll.stop()
+        self._heading.setText("Final Render Window")
+        self._current.setText("This job is on hold and will not start automatically.")
+        self._detail.setText("Use Resume on the Home On hold list, or Resume session, to restart it.")
+        self._hold.hide()
+        self._abort.hide()
+        self._home.show()
+
+    def _confirm_hold(self) -> None:
+        folder = _session_folder(self)
+        if folder is None or self._render_job_id is not None:
+            return
+        if not confirm_hold_outside_queue(self):
+            return
+        self.controller.hold_queued_job(folder, "full")
+        self._poll.stop()
+        self._leave_after_cancel()
+
+    def prepare_for_abort_close(self) -> None:
+        self._poll.stop()
+        self._render_job_id = None
+
+    def _return_to_home(self) -> None:
+        window = self.window()
+        if hasattr(window, "focus_home_keep_final"):
+            window.focus_home_keep_final()
+            return
+        self.navigate.emit("A1")
+
+    def _leave_after_cancel(self) -> None:
+        window = self.window()
+        if hasattr(window, "close_final_render"):
+            window.close_final_render()
+            return
+        self.navigate.emit("A1")
+
     def _confirm_abort(self) -> None:
+        window = self.window()
+        if hasattr(window, "request_abort_final"):
+            window.request_abort_final()
+            return
+
+        folder = _session_folder(self)
         if self._render_job_id is None:
+            if folder is None:
+                return
+            if not confirm_action(
+                self,
+                title="Remove from queue?",
+                text=(
+                    "This will cancel the autocut completely, and remove this job "
+                    "from the queue. Your video and audio files will remain untouched "
+                    "where they are."
+                ),
+            ):
+                return
+            self.controller.cancel_queued_job(folder, "full")
+            self._poll.stop()
+            self._leave_after_cancel()
             return
         if not confirm_action(
             self,
             title="Abort full render?",
             text="Stop the current render?",
-            detail="Partial outputs are kept. You can retry from this screen later.",
+            detail=(
+                "This will cancel the autocut completely, and remove this job "
+                "from the queue. Your video and audio files will remain untouched "
+                "where they are."
+            ),
         ):
             return
 
-        result = self.controller.abort_job(self._render_job_id, confirmed=True)
+        self.controller.abort_job(
+            self._render_job_id, confirmed=True, advance_queue=True
+        )
         self._poll.stop()
         self._render_job_id = None
-        navigate_to_failure(
-            self,
-            summary="Full render was stopped.",
-            retry_screen="F4",
-            detail=result.message or "You can try again or resume this session later.",
-            aborted=True,
-        )
+        self._leave_after_cancel()
 
     def _on_poll_tick(self) -> None:
         if not self.isVisible():
@@ -704,6 +842,16 @@ class FullRenderScreen(ScreenWidget):
         folder = _session_folder(self)
         if folder is None:
             return
+
+        if self._render_job_id is None:
+            existing = self.controller.find_running_render_job(folder)
+            if existing is not None:
+                self._render_job_id = existing.id
+                self._hold.hide()
+                self._heading.setText("Rendering full interview…")
+                self._local_started = datetime.now().astimezone()
+            else:
+                return
 
         finished = self.controller.poll_jobs()
         for job in finished:
@@ -741,7 +889,7 @@ class FullRenderScreen(ScreenWidget):
         if progress.failure:
             detail = failure_summary(progress.failure) or detail
         file_detail = progress.failure.get("error_detail") if progress.failure else None
-        navigate_to_failure(
+        maybe_offer_clean_on_disk_failure(
             self,
             summary=detail,
             retry_screen="F4",
@@ -771,12 +919,17 @@ class FullRenderScreen(ScreenWidget):
         timing_text = " · ".join(timing_parts)
         self._timing.setText(timing_text)
         self._timing.setVisible(bool(timing_text))
+        self._pace.setVisible(bool(progress.step_started_display))
 
-        if progress.failure and not progress.render_complete:
+        if (
+            progress.failure
+            and not progress.render_complete
+            and self._render_job_id is None
+        ):
             summary = failure_summary(progress.failure)
             if summary:
                 self._poll.stop()
-                navigate_to_failure(
+                maybe_offer_clean_on_disk_failure(
                     self,
                     summary=summary,
                     retry_screen="F4",

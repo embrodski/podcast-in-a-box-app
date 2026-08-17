@@ -194,67 +194,132 @@ class RecordingScreen(ScreenWidget):
         super().__init__(controller, parent)
         self._worker: CallableWorker | None = None
         self._recording_started = False
+        self._enter_token = 0
 
         layout = QVBoxLayout(self)
-        layout.addWidget(heading_label("Recording"))
+
+        self._warmup_page = QWidget()
+        warmup_layout = QVBoxLayout(self._warmup_page)
+        warmup_layout.setContentsMargins(0, 0, 0, 0)
+        warmup_layout.addStretch()
+        self._warmup_label = heading_label(
+            "Please wait, warming up. This will take ~15 sec.",
+            word_wrap=True,
+        )
+        self._warmup_label.setAlignment(Qt.AlignCenter)
+        self._warmup_label.setStyleSheet("font-size: 32px; font-weight: 600;")
+        warmup_layout.addWidget(self._warmup_label)
+        warmup_layout.addStretch()
+        layout.addWidget(self._warmup_page, stretch=1)
+
+        self._recording_panel = QWidget()
+        rec = QVBoxLayout(self._recording_panel)
+        rec.setContentsMargins(0, 0, 0, 0)
+        rec.addWidget(heading_label("Recording"))
         self._instructions = body_label("")
-        layout.addWidget(self._instructions)
+        rec.addWidget(self._instructions)
 
         self._status = body_label("")
-        layout.addWidget(self._status)
+        rec.addWidget(self._status)
 
-        layout.addStretch()
+        rec.addStretch()
 
         self._stop = QPushButton("Stop recording")
         self._stop.setMinimumHeight(48)
         self._stop.setStyleSheet("font-weight: 600;")
         self._stop.setEnabled(False)
         self._stop.clicked.connect(self._stop_recording)
-        layout.addWidget(self._stop)
+        rec.addWidget(self._stop)
 
         back = QPushButton("Back")
         back.clicked.connect(self._confirm_back)
-        layout.addWidget(back)
+        rec.addWidget(back)
+        layout.addWidget(self._recording_panel, stretch=1)
+        self._show_warmup()
+
+    def _show_warmup(self) -> None:
+        self._recording_panel.hide()
+        self._warmup_page.show()
+
+    def _show_recording(self) -> None:
+        self._warmup_page.hide()
+        self._recording_panel.show()
 
     def on_enter(self) -> None:
+        self._enter_token += 1
+        token = self._enter_token
         self._recording_started = False
         self._stop.setEnabled(False)
+        self._show_warmup()
         try:
             self._instructions.setText(self.controller.recording_instructions())
         except Exception as exc:
+            self._show_recording()
             self._status.setText(str(exc))
             return
 
+        from app.controller.storage_gate import assess_recording_storage
+        from app.gui.storage_prompts import gate_low_disk
+
+        assessment = assess_recording_storage()
+        disk_action = gate_low_disk(
+            self,
+            assessment,
+            return_screen="B4",
+            critical_recording=True,
+        )
+        if disk_action == "go_clean":
+            return
+        if disk_action == "abort":
+            self.navigate.emit("B3")
+            return
+
         if self.controller.multicorder_is_active():
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Question)
-            box.setWindowTitle("MultiCorder already recording")
-            box.setText("MultiCorder is already recording.")
-            box.setInformativeText(
-                "Continue the current session, or stop and start a new recording?"
-            )
-            btn_continue = box.addButton(
-                "Continue current recording", QMessageBox.AcceptRole
-            )
-            btn_restart = box.addButton(
-                "Stop and restart", QMessageBox.DestructiveRole
-            )
-            box.addButton(QMessageBox.Cancel)
-            box.exec()
-            clicked = box.clickedButton()
-            if clicked is None or box.clickedButton() == box.button(QMessageBox.Cancel):
+            self._show_recording()
+            already_action = self._ask_already_recording()
+            if already_action is None:
                 self.navigate.emit("B3")
                 return
-            action = "continue" if clicked == btn_continue else "restart"
-        else:
-            action = None
-
-        self._status.setText("Starting MultiCorder…")
-        if self._worker is not None and self._worker.isRunning():
+            self._start_multicorder(already_action)
             return
+
+        self._worker = CallableWorker(self.controller.warmup_cameras_for_recording)
+        self._worker.finished_ok.connect(lambda _result: self._after_warmup(token))
+        self._worker.failed.connect(lambda _message: self._after_warmup(token))
+        self._worker.start()
+
+    def _ask_already_recording(self) -> str | None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("MultiCorder already recording")
+        box.setText("MultiCorder is already recording.")
+        box.setInformativeText(
+            "Continue the current session, or stop and start a new recording?"
+        )
+        btn_continue = box.addButton(
+            "Continue current recording", QMessageBox.AcceptRole
+        )
+        btn_restart = box.addButton(
+            "Stop and restart", QMessageBox.DestructiveRole
+        )
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is None or clicked == box.button(QMessageBox.Cancel):
+            return None
+        return "continue" if clicked == btn_continue else "restart"
+
+    def _after_warmup(self, token: int) -> None:
+        if token != self._enter_token or not self.isVisible():
+            return
+        self._show_recording()
+        self._start_multicorder(None)
+
+    def _start_multicorder(self, already_recording_action: str | None) -> None:
+        self._status.setText("Starting MultiCorder…")
         self._worker = CallableWorker(
             self.controller.begin_recording,
-            already_recording_action=action,
+            already_recording_action=already_recording_action,
         )
         self._worker.finished_ok.connect(self._on_started)
         self._worker.failed.connect(self._on_start_failed)
@@ -344,5 +409,12 @@ class RecordingSavedScreen(ScreenWidget):
         )
         layout.addStretch()
         done = QPushButton("Done")
-        done.clicked.connect(lambda: self.navigate.emit("A1"))
+        done.clicked.connect(self._close_done)
         layout.addWidget(done)
+
+    def _close_done(self) -> None:
+        window = self.window()
+        if hasattr(window, "close_flow_to_home"):
+            window.close_flow_to_home()
+            return
+        self.navigate.emit("A1")

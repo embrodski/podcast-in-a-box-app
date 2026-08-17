@@ -67,14 +67,21 @@ class DoneScreen(ScreenWidget):
 
         layout.addStretch()
 
-        done = QPushButton("Back to home")
+        done = QPushButton("Close")
         done.setMinimumHeight(44)
-        done.clicked.connect(lambda: self.navigate.emit("A1"))
+        done.clicked.connect(self._close_done)
         layout.addWidget(done)
 
         self._session_folder: Path | None = None
         self._delivery_email: str | None = None
         self._can_send_link = False
+
+    def _close_done(self) -> None:
+        window = self.window()
+        if hasattr(window, "close_final_render"):
+            window.close_final_render()
+            return
+        self.navigate.emit("A1")
 
     def on_enter(self) -> None:
         ctx = self.context()

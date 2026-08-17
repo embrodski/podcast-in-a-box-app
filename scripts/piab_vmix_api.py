@@ -39,6 +39,7 @@ def call_vmix_function(
     function: str,
     *,
     value: str | None = None,
+    input_ref: str | None = None,
     api_base: str = DEFAULT_VMIX_API_BASE,
     request_fn=None,
     timeout_sec: float = 30.0,
@@ -46,6 +47,8 @@ def call_vmix_function(
     params = {"Function": function}
     if value is not None:
         params["Value"] = value
+    if input_ref is not None:
+        params["Input"] = input_ref
     url = api_base + "?" + urllib.parse.urlencode(params)
     caller = request_fn or _default_api_request
     caller(url, timeout_sec=timeout_sec)

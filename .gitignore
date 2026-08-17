@@ -65,3 +65,9 @@ Thumbs.db
 *Key*.txt
 *api_key*
 *API_KEY*
+
+# PIAB session data (work root lives next to the repo after flatten)
+/Sessions/
+/piab-process-log.json
+/piab-job-queue.json
+/.piab-app.lock

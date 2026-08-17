@@ -14,6 +14,7 @@ from piab_lib import (
     cluster_session_files,
     estimate_full_render,
     estimate_prep_through_one_min,
+    resolve_init_layout,
     resolve_scan_dir,
     role_to_audio_name,
     role_to_video_name,
@@ -143,6 +144,32 @@ class ResolveScanDirTests(unittest.TestCase):
 
             with patch("piab_lib.list_top_level_multicorder", side_effect=fake_list):
                 self.assertEqual(resolve_scan_dir(root=root, working=working), root.resolve())
+
+    def test_init_layout_creates_under_work_root_and_scans_dump_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dump = Path(tmp) / "PodcastRoom"
+            work = dump / "PodcastInABox"
+            dump.mkdir()
+            work.mkdir()
+
+            def fake_list(path: Path, skipped=None) -> list[MediaInfo]:
+                if path == dump.resolve():
+                    return [_info("parent.mp4", "video", 1, 100)]
+                return []
+
+            with patch("piab_lib.list_top_level_multicorder", side_effect=fake_list):
+                working, scan_dir, name, mode = resolve_init_layout(
+                    mode="default",
+                    root=work,
+                    name="Bayeswatch",
+                    working_folder=None,
+                    scan_root=dump,
+                )
+            self.assertEqual(mode, "default")
+            self.assertEqual(name, "Bayeswatch")
+            self.assertEqual(working, (work / "Bayeswatch").resolve())
+            self.assertEqual(scan_dir, dump.resolve())
+
     def test_picks_recent_cluster(self) -> None:
         old = [
             _info("MultiCorder1 - DeckLink Quad HDMI Recorder old.mp4", "video", 1000, 100),

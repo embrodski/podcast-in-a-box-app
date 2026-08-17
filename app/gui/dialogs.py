@@ -27,6 +27,23 @@ def confirm_close_while_busy(parent: QWidget, reasons: list[str]) -> bool:
     return box.clickedButton() == quit_abort
 
 
+def confirm_hold_outside_queue(parent: QWidget) -> bool:
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Question)
+    box.setWindowTitle("Hold outside queue?")
+    box.setText(
+        "This job will be held in its present state and removed from the "
+        "auto-process queue."
+    )
+    box.setInformativeText(
+        "You can manually restart it later from Home (On hold) or Resume session. "
+        "It will not start automatically."
+    )
+    box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+    box.setDefaultButton(QMessageBox.No)
+    return box.exec() == QMessageBox.Yes
+
+
 def confirm_action(parent: QWidget, *, title: str, text: str, detail: str = "") -> bool:
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Question)

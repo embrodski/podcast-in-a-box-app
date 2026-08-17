@@ -13,6 +13,7 @@ from piab_fast_preview_lib import (
     resolve_preview_one_min_path,
     restore_canonical_paths,
     save_fast_preview_approval,
+    snapshot_preview_sandbox_artifacts,
 )
 from piab_lib import load_piab_state, mark_step, print_json, save_piab_state
 
@@ -33,6 +34,7 @@ def approve_fast_preview(working_folder: Path) -> dict:
         preview_one_min_path=str(preview_path.resolve()),
         sync_ab_required=sync_ab,
     )
+    snapshot_preview_sandbox_artifacts(state)
 
     restore_canonical_paths(state)
 
@@ -65,7 +67,7 @@ def approve_fast_preview(working_folder: Path) -> dict:
         auto_continue=True,
         note="Skipped Estimate B — auto-continuing after Fast Preview approval.",
     )
-    state["resume_at"] = "13_full_prep_after_preview"
+    state["resume_at"] = "13_queued_full"
     save_piab_state(working, state)
     return state
 

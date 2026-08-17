@@ -32,6 +32,9 @@ class ScreenWidget(QWidget):
     def on_enter(self) -> None:
         """Called when this screen becomes visible."""
 
+    def on_leave(self) -> None:
+        """Called when navigating away or when the window is closing."""
+
     def title(self) -> str:
         from app.gui.screens import SCREEN_TITLES
 

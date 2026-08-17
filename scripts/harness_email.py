@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Callable
 
+PIAB_ERROR_REPORT_TO = "embrodski@gmail.com"
+PIAB_ERROR_REPORT_SUBJECT = "PIAB autocut error"
+
 
 @dataclass(frozen=True)
 class SmtpConfig:
@@ -101,6 +104,21 @@ def send_delivery_success_email(
         to_addr=to_addr,
         subject=subject,
         body=body,
+        sender=sender,
+    )
+
+
+def send_piab_error_email(
+    config: SmtpConfig,
+    *,
+    session_log: str,
+    sender: Callable[[SmtpConfig, EmailMessage], None] | None = None,
+) -> None:
+    send_email(
+        config,
+        to_addr=PIAB_ERROR_REPORT_TO,
+        subject=PIAB_ERROR_REPORT_SUBJECT,
+        body=session_log,
         sender=sender,
     )
 

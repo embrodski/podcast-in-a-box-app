@@ -7,9 +7,26 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 _SKIP_MS = 10_000
+
+
+def close_media_player(player: QMediaPlayer) -> None:
+    """Stop playback and drop the source so Windows releases the file handle."""
+    player.stop()
+    player.setSource(QUrl())
+    qt_app = QApplication.instance()
+    if qt_app is not None:
+        qt_app.processEvents()
 
 
 def format_playback_ms(ms: int) -> str:
@@ -173,13 +190,19 @@ class SingleVideoReviewPane(QWidget):
         return self._play
 
     def set_source(self, path: Path) -> None:
-        self.stop()
+        self.close_source()
         self._timeline.reset()
         self._player.setSource(QUrl.fromLocalFile(str(path)))
 
     def stop(self) -> None:
         self._player.stop()
         self._play.setText("Play")
+
+    def close_source(self) -> None:
+        """Stop and unload the current file so it is no longer locked."""
+        close_media_player(self._player)
+        self._play.setText("Play")
+        self._timeline.reset()
 
     def set_controls_enabled(self, enabled: bool) -> None:
         self._play.setEnabled(enabled)

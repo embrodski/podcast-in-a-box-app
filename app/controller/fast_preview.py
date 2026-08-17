@@ -39,7 +39,7 @@ def full_after_preview_pending(state: dict) -> bool:
     if not approval.get("approved_at"):
         return False
     resume_at = state.get("resume_at")
-    if resume_at in ("13_full_prep_after_preview", "13_full_render"):
+    if resume_at in ("13_queued_full", "13_full_prep_after_preview", "13_full_render"):
         return True
     render_step = (state.get("steps") or {}).get("13_full_render") or {}
     return render_step.get("status") != "completed"
@@ -50,6 +50,9 @@ def should_start_fast_preview(state: dict) -> bool:
         return False
     if (state.get("steps") or {}).get("10p_fast_preview_one_min", {}).get("status") == "completed":
         return False
+    raw = Path(str((state.get("paths") or {}).get("raw") or ""))
+    if raw.is_dir():
+        return True
     return fast_preview_eligible_for_state(state)
 
 

@@ -26,6 +26,7 @@ from harness_av_sync_lib import (
     ensure_forced_offset_prep,
     full_interview_output_name,
     render_full_with_prep,
+    write_canonical_main_segments,
 )
 from podcast_flag_phrases import report_flag_timestamps_after_render
 from piab_lib import (
@@ -117,6 +118,9 @@ def main() -> int:
             state["interview_dsl"] = str(dsl)
         else:
             dsl = Path(state["interview_dsl"])
+
+        write_canonical_main_segments(state, simplified_json=simplified)
+        save_piab_state(working, state)
 
         if state.get("sync_offset_choice") == SYNC_CHOICE_FORCED_OFFSET:
             prep = ensure_forced_offset_prep(state, allow_overwrite=args.allow_overwrite)

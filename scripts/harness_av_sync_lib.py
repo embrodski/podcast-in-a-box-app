@@ -227,6 +227,61 @@ def prep_video_sync_variant(
     }
 
 
+def _prep_for_full_segments(state: dict[str, Any]) -> dict[str, Any]:
+    if state.get("sync_offset_choice") == SYNC_CHOICE_FORCED_OFFSET:
+        prep = state.get("main_prepped_forced_offset") or state.get("main_prepped")
+    else:
+        prep = state.get("main_prepped")
+    if not isinstance(prep, dict) or not prep.get("prepped_videos"):
+        raise FileNotFoundError(
+            "Full-length prepped media is missing; cannot write Temp/segments.json."
+        )
+    return prep
+
+
+def _convert_detail_transcript(state: dict[str, Any], simplified: Path) -> None:
+    from harness_episode_lib import podcast_swap_speaker_ids_cli_args
+
+    detail = Path(str(state.get("main_transcript_json") or ""))
+    if not detail.is_file():
+        raise FileNotFoundError(
+            f"Missing transcript for full-render segments.json: {detail}"
+        )
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "convert_transcript_json.py"),
+        str(detail),
+        "-o",
+        str(simplified),
+    ]
+    cmd.extend(podcast_swap_speaker_ids_cli_args(state))
+    run_cmd(cmd)
+
+
+def write_canonical_main_segments(
+    state: dict[str, Any],
+    *,
+    simplified_json: Path | None = None,
+) -> Path:
+    """Write ``Temp/segments.json`` for the full interview (not Fast Preview)."""
+    temp = Path(state["paths"]["temp"])
+    temp.mkdir(parents=True, exist_ok=True)
+    prep = _prep_for_full_segments(state)
+    simplified = (
+        Path(simplified_json)
+        if simplified_json is not None
+        else temp / "interview_transcript_simplified.json"
+    )
+    if not simplified.is_file():
+        _convert_detail_transcript(state, simplified)
+    path = save_segments_file(
+        segments_path(temp),
+        {MAIN_SEGMENT_KEY: build_segment_entry(prep, simplified)},
+    )
+    state["segments_file"] = str(path.resolve())
+    return path
+
+
 def build_segment_entry(prep: dict[str, Any], simplified_json: Path) -> dict[str, Any]:
     ben, guest, wide = pick_interview_videos(prep["prepped_videos"])
     return {

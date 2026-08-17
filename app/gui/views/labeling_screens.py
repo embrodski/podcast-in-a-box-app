@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from app.gui.dialogs import confirm_action
 from app.gui.widgets.path_banner import PathBanner
 from app.gui.widgets.screen_base import ScreenWidget
+from app.gui.widgets.video_playback import close_media_player
 from app.gui.widgets.selectable_text import body_label, heading_label, selectable_plain_text
 from app.gui.widgets.worker import CallableWorker
 
@@ -289,6 +290,9 @@ class LabelMicrophonesScreen(ScreenWidget):
         self._worker.finished_ok.connect(self._on_previews)
         self._worker.failed.connect(lambda msg: self._status.setText(msg))
         self._worker.start()
+
+    def on_leave(self) -> None:
+        close_media_player(self._player)
 
     def _load_previews(self, folder: Path) -> dict:
         state = self.controller.load_session_state(folder)
@@ -582,42 +586,30 @@ class EstimatePrepScreen(ScreenWidget):
             return
 
         eta = state.get("estimate_prep") or {}
-        eta_fast = state.get("estimate_prep_fast") or {}
-        fast = bool(state.get("fast_preview_eligible"))
-        if not eta and not fast:
+        from app.controller.paths import ensure_scripts_path
+
+        ensure_scripts_path()
+        from piab_fast_preview_lib import estimate_fast_preview_prep
+
+        eta_fast = estimate_fast_preview_prep()
+        if not eta and not eta_fast:
             self._summary.setText(
                 "Prep estimate is not available yet. Go back and apply labels first."
             )
             return
 
-        summary = str(eta.get("summary") or "unknown duration")
         source_human = str(
             (eta.get("breakdown") or {}).get("source_duration_human") or "?"
         )
+        fast_summary = str(eta_fast.get("summary") or "a few minutes")
         lines = [
             "Labeling is complete. Files are in the session Raw folder.",
             "",
             f"Source recording length: {source_human}",
+            "",
+            "Next: Fast Preview (a short 1-minute review from preview clips).",
+            f"Estimated Fast Preview time: {fast_summary}",
+            "",
+            "Full-length files are not created until you approve the preview.",
         ]
-        if fast:
-            fast_summary = str(eta_fast.get("summary") or "a few minutes")
-            lines.extend(
-                [
-                    "",
-                    "Fast Preview is enabled (interview longer than 10 minutes).",
-                    f"Estimated Fast Preview time: {fast_summary}",
-                    "",
-                    "You will review a 1-minute preview from the first 5 minutes of "
-                    "source media, then the app will process the full interview.",
-                ]
-            )
-        else:
-            lines.extend(
-                [
-                    f"Estimated prep time (through 1-minute preview): {summary}",
-                    "",
-                    "This includes syncing audio and video, transcription, and rendering "
-                    "a one-minute test clip for your review.",
-                ]
-            )
         self._summary.setText("\n".join(lines))

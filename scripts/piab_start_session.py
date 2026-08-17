@@ -22,7 +22,14 @@ from harness_delivery_prompt import (
     merge_delivery_into_state,
     prompt_delivery_opt_in,
 )
-from piab_lib import DEFAULT_SCAN_ROOT, collect_session_scan, load_piab_state, print_json, save_piab_state
+from piab_lib import (
+    DEFAULT_SCAN_ROOT,
+    DEFAULT_WORK_ROOT,
+    collect_session_scan,
+    load_piab_state,
+    print_json,
+    save_piab_state,
+)
 from piab_ensure_vmix import ensure_vmix_running
 from piab_open_vmix_preset import open_vmix_preset
 from piab_confirm_camera_setup import confirm_camera_setup
@@ -235,16 +242,23 @@ def _init_default_folder(repo: Path, args: argparse.Namespace, *, after_recordin
         name = args.default_name
     else:
         while True:
-            name = input("Working folder name to create under PodcastRoom: ").strip()
+            name = input("Working folder name to create under PodcastInABox\\Sessions: ").strip()
             if name and "/" not in name and "\\" not in name:
                 break
             print("Enter a single folder name (no path separators).")
 
-    working = DEFAULT_SCAN_ROOT / name
+    working = DEFAULT_WORK_ROOT / name
     rc = _run_init(
         repo,
         _init_argv_with_delivery(
-            ["--name", name, "--root", str(DEFAULT_SCAN_ROOT)],
+            [
+                "--name",
+                name,
+                "--root",
+                str(DEFAULT_WORK_ROOT),
+                "--scan-root",
+                str(DEFAULT_SCAN_ROOT),
+            ],
             args,
         ),
     )
@@ -337,7 +351,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--default-name",
-        help="Default mode: working subfolder name under E:\\PodcastRoom.",
+        help="Default mode: working subfolder name under E:\\PodcastRoom\\PodcastInABox\\Sessions.",
     )
     parser.add_argument(
         "--working-folder",
