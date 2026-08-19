@@ -174,10 +174,79 @@ class FastPreviewLibTests(unittest.TestCase):
             (working / "Input").mkdir()
             (working / "Temp").mkdir()
             save_piab_state(working, state)
-            promote_short_source_preview_to_canonical(working, allow_overwrite=True)
+            with patch("harness_av_sync_lib.write_canonical_main_segments"):
+                promote_short_source_preview_to_canonical(working, allow_overwrite=True)
             dest = working / "Input" / "Host Video-prepped.mp4"
             self.assertTrue(dest.is_file())
             self.assertEqual(dest.read_bytes(), b"video")
+
+    def test_promote_short_source_copies_elevenlabs_sidecars(self) -> None:
+        from piab_fast_preview_lib import promote_short_source_preview_to_canonical
+        from piab_lib import save_piab_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            working = Path(tmp)
+            preview_input = working / "Preview Files" / "Input"
+            preview_input.mkdir(parents=True)
+            wav = preview_input / "Preview Clean Audio-prepped.wav"
+            wav.write_bytes(b"wav")
+            json_path = preview_input / "Preview Clean Audio-prepped Transcript.json"
+            json_path.write_text("{}", encoding="utf-8")
+            text_path = preview_input / "Preview Clean Audio-prepped Text.txt"
+            text_path.write_text("00:00:00,000 --> 00:00:01,000 [Speaker 0]\nHello.\n", encoding="utf-8")
+            id_path = preview_input / "Preview Clean Audio-prepped Transcription ID.txt"
+            id_path.write_text("tr_abc", encoding="utf-8")
+            video = preview_input / "Preview Host Video-prepped.mp4"
+            video.write_bytes(b"video")
+            state = {
+                "kind": "podcast_in_a_box",
+                "name": "test",
+                "paths": {
+                    "raw": str(working / "Raw"),
+                    "input": str(working / "Input"),
+                    "temp": str(working / "Temp"),
+                    "output": str(working / "Output"),
+                },
+                "max_video_duration_sec": 120.0,
+                "fast_preview": {
+                    "max_video_duration_sec": 120.0,
+                    "sandbox_artifacts": {
+                        "main_prepped": {
+                            "prepped_videos": [str(video)],
+                            "prepped_audio_wav": str(wav),
+                        },
+                        "main_transcript_json": str(json_path),
+                    },
+                },
+                "fast_preview_approval": {
+                    "approved_at": "2026-01-01T00:00:00+00:00",
+                    "sync_offset_choice": "start_aligned",
+                    "swap_speaker_ids": False,
+                },
+                "steps": {},
+            }
+            (working / "Raw").mkdir()
+            (working / "Input").mkdir()
+            (working / "Temp").mkdir()
+            save_piab_state(working, state)
+            with patch("harness_av_sync_lib.write_canonical_main_segments"):
+                result = promote_short_source_preview_to_canonical(
+                    working, allow_overwrite=True
+                )
+            input_dir = working / "Input"
+            self.assertTrue((input_dir / "Host Video-prepped.mp4").is_file())
+            self.assertTrue((input_dir / "Clean Audio-prepped.wav").is_file())
+            self.assertTrue((input_dir / "Clean Audio-prepped Transcript.json").is_file())
+            dest_text = input_dir / "Clean Audio-prepped Text.txt"
+            dest_id = input_dir / "Clean Audio-prepped Transcription ID.txt"
+            self.assertTrue(dest_text.is_file())
+            self.assertTrue(dest_id.is_file())
+            self.assertEqual(dest_text.read_text(encoding="utf-8"), text_path.read_text(encoding="utf-8"))
+            self.assertEqual(dest_id.read_text(encoding="utf-8"), "tr_abc")
+            self.assertEqual(
+                Path(str(result["main_transcript_json"])).name,
+                "Clean Audio-prepped Transcript.json",
+            )
 
     def test_slice_last_sixty_seconds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

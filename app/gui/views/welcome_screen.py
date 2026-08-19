@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
-from app.controller.paths import DEFAULT_WORK_ROOT
+from app.controller.paths import DEFAULT_SCAN_ROOT, DEFAULT_WORK_ROOT
+from app.controller.storage_gate import (
+    CLEAN_WORKING_FILES_BUTTON,
+    clean_working_files_button_text,
+    free_bytes_at,
+)
 from app.gui.widgets.autocut_footer import AutocutFooter
 from app.gui.widgets.screen_base import ScreenWidget
 from app.gui.widgets.selectable_text import body_label, heading_label
@@ -29,13 +35,32 @@ class WelcomeScreen(ScreenWidget):
             "Record a podcast in the Lighthaven room, or bring back files from a "
             "previous session to autocut an interview."
         )
-        layout.addWidget(blurb)
+        folder_blue = "#60a5fa"
+        sessions_green = "#4ade80"
+        podcast_room = f'<span style="color:{folder_blue};">PodcastRoom</span>'
+        podcast_in_a_box = f'<span style="color:{folder_blue};">PodcastInABox</span>'
+        sessions = f'<span style="color:{sessions_green};">Sessions</span>'
+        paths = body_label("")
+        paths.setTextFormat(Qt.TextFormat.RichText)
+        paths.setContentsMargins(0, 0, 0, 0)
+        paths.setText(
+            f"All recorded audio and video is saved to the {podcast_room} "
+            "folder in E:\\ (\"New Volume\")<br>"
+            f"All autocut sessions saved in the folder E: -&gt; {podcast_room} "
+            f"-&gt; {podcast_in_a_box} -&gt; {sessions}"
+        )
+        intro = QWidget()
+        intro_layout = QVBoxLayout(intro)
+        intro_layout.setContentsMargins(0, 0, 0, 0)
+        intro_layout.setSpacing(10)
+        intro_layout.addWidget(blurb)
+        intro_layout.addWidget(paths)
+        layout.addWidget(intro)
 
         self._banner = body_label("")
         self._banner.setStyleSheet("color: #a00; font-weight: 600;")
+        self._banner.hide()
         layout.addWidget(self._banner)
-
-        layout.addSpacing(8)
 
         new_btn = QPushButton("New session")
         new_btn.setMinimumHeight(44)
@@ -47,10 +72,10 @@ class WelcomeScreen(ScreenWidget):
         resume_btn.clicked.connect(lambda: self.navigate.emit("A2"))
         layout.addWidget(resume_btn)
 
-        clean_btn = QPushButton("Clean Old Working Files")
-        clean_btn.setMinimumHeight(44)
-        clean_btn.clicked.connect(self._open_clean)
-        layout.addWidget(clean_btn)
+        self._clean_btn = QPushButton(CLEAN_WORKING_FILES_BUTTON)
+        self._clean_btn.setMinimumHeight(44)
+        self._clean_btn.clicked.connect(self._open_clean)
+        layout.addWidget(self._clean_btn)
 
         self._status_line = AutocutFooter()
         layout.addWidget(self._status_line)
@@ -78,6 +103,13 @@ class WelcomeScreen(ScreenWidget):
         close_btn = QPushButton("Close Program")
         close_btn.clicked.connect(self._close_program)
         layout.addWidget(close_btn)
+
+    def _refresh_clean_button(self) -> None:
+        try:
+            free = free_bytes_at(DEFAULT_SCAN_ROOT)
+        except OSError:
+            free = None
+        self._clean_btn.setText(clean_working_files_button_text(free))
 
     def _open_clean(self) -> None:
         ctx = self.context()
@@ -125,10 +157,13 @@ class WelcomeScreen(ScreenWidget):
             self._banner.setText(
                 f"Note: {', '.join(reasons)} is active in the background."
             )
+            self._banner.show()
         else:
             self._banner.setText("")
+            self._banner.hide()
 
     def _refresh_queue(self) -> None:
+        self._refresh_clean_button()
         current, waiting = self.controller.full_queue_display()
         lines: list[str] = []
         if current:

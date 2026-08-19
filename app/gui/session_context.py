@@ -26,6 +26,7 @@ class SessionContext:
     failure_retry_screen: str | None = None
     failure_aborted: bool = False
     clean_return_screen: str | None = None
+    skip_vmix_auto_advance: bool = False
 
     def reset(self, *, entry_path: str) -> None:
         self.entry_path = entry_path
@@ -44,3 +45,4 @@ class SessionContext:
         self.failure_retry_screen = None
         self.failure_aborted = False
         self.clean_return_screen = None
+        self.skip_vmix_auto_advance = False

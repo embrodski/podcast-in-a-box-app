@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QLabel,
     QMainWindow,
     QMessageBox,
     QStackedWidget,
@@ -17,7 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.controller import PiabController
-from app.gui.dialogs import confirm_action
+from app.gui.dialogs import (
+    REMOVE_FROM_QUEUE_TEXT,
+    confirm_action,
+    confirm_cancel_label_apply,
+)
 from app.gui.screens import PLACEHOLDER_SCREENS, SCREEN_TITLES
 from app.gui.session_context import SessionContext
 from app.gui.views import (
@@ -40,6 +45,7 @@ from app.gui.views import (
     PlaceholderScreen,
     PreflightScreen,
     ProcessingScreen,
+    e1_close_requires_confirm,
     RecordingCompleteScreen,
     RecordingSavedScreen,
     RecordingScreen,
@@ -150,6 +156,8 @@ class MainWindow(QMainWindow):
             self._register_screen(placeholder)
 
         self._status = QStatusBar()
+        self._screen_id_label = QLabel()
+        self._status.addWidget(self._screen_id_label)
         self.setStatusBar(self._status)
 
         self._poll = QTimer(self)
@@ -213,6 +221,55 @@ class MainWindow(QMainWindow):
         self.close_final_render()
         return True
 
+    def _current_screen_id(self) -> str:
+        widget = self._stack.currentWidget()
+        return str(getattr(widget, "screen_id", "") or "")
+
+    def _stop_prep_poll(self) -> None:
+        screen = self._screens.get("E1")
+        if isinstance(screen, ProcessingScreen):
+            screen.prepare_for_abort_close()
+
+    def _e1_queue_status(self) -> str | None:
+        folder = self._context.session_folder
+        if folder is None:
+            return None
+        entry = self.controller.job_queue.entry_for(folder, "fast_preview")
+        if entry is None:
+            return None
+        return entry.status
+
+    def _abort_prep_work(self, *, ask_confirm: bool) -> bool:
+        folder = self._context.session_folder
+        job = None
+        if folder is not None:
+            job = self.controller.find_running_prep_job(folder)
+
+        if ask_confirm:
+            if job is None:
+                if not confirm_action(
+                    self,
+                    title="Remove from queue?",
+                    text=REMOVE_FROM_QUEUE_TEXT,
+                ):
+                    return False
+            elif not confirm_action(
+                self,
+                title="Abort processing?",
+                text="Stop the current prep run?",
+                detail=REMOVE_FROM_QUEUE_TEXT,
+            ):
+                return False
+
+        self._stop_prep_poll()
+        if job is not None:
+            self.controller.abort_job(
+                job.id, confirmed=True, advance_queue=True
+            )
+        elif folder is not None:
+            self.controller.cancel_queued_job(folder, "fast_preview")
+        return True
+
     def _stop_final_poll(self) -> None:
         screen = self._screens.get("F4")
         if isinstance(screen, FullRenderScreen):
@@ -229,22 +286,14 @@ class MainWindow(QMainWindow):
                 if not confirm_action(
                     self,
                     title="Remove from queue?",
-                    text=(
-                        "This will cancel the autocut completely, and remove this job "
-                        "from the queue. Your video and audio files will remain untouched "
-                        "where they are."
-                    ),
+                    text=REMOVE_FROM_QUEUE_TEXT,
                 ):
                     return False
             elif not confirm_action(
                 self,
                 title="Abort full render?",
                 text="Stop the current render?",
-                detail=(
-                    "This will cancel the autocut completely, and remove this job "
-                    "from the queue. Your video and audio files will remain untouched "
-                    "where they are."
-                ),
+                detail=REMOVE_FROM_QUEUE_TEXT,
             ):
                 return False
 
@@ -315,8 +364,8 @@ class MainWindow(QMainWindow):
             "final": "Final Render",
         }.get(self.role, "Podcast in a Box")
         self.setWindowTitle(f"{prefix} — {title}")
-        self._status.showMessage(f"Screen {screen_id}", 3000)
         self._refresh_footer(screen_id)
+        self._update_status_bar(screen_id)
         screen.on_enter()
 
     def _navigate_session(self, screen_id: str, session_folder: object) -> None:
@@ -334,6 +383,18 @@ class MainWindow(QMainWindow):
         self._session_folder = folder
         self._context.session_folder = folder
         self.navigate(screen_id, _internal=True)
+
+    def _update_status_bar(self, screen_id: str | None = None) -> None:
+        if screen_id is None:
+            widget = self._stack.currentWidget()
+            screen_id = str(getattr(widget, "screen_id", "") or "")
+        parts: list[str] = []
+        if screen_id:
+            parts.append(f"Screen {screen_id}")
+        reasons = self.controller.busy_reasons()
+        if reasons:
+            parts.append(f"Active: {', '.join(reasons)}")
+        self._screen_id_label.setText("  ".join(parts))
 
     def _refresh_footer(self, screen_id: str | None = None) -> None:
         current = screen_id
@@ -367,9 +428,7 @@ class MainWindow(QMainWindow):
             welcome = self._screens.get("A1")
             if isinstance(welcome, WelcomeScreen) and self._stack.currentWidget() is welcome:
                 welcome._refresh_queue()
-        reasons = self.controller.busy_reasons()
-        if reasons:
-            self._status.showMessage(f"Active: {', '.join(reasons)}")
+        self._update_status_bar()
         self._refresh_footer()
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -389,6 +448,36 @@ class MainWindow(QMainWindow):
                             event.ignore()
                             return
                     self._allow_close = True
+                self._leave_current_screen()
+                self.manager.ensure_home(navigate_to="A1")
+                self.manager.window_closed(self)
+                event.accept()
+                return
+            if self.role == "flow" and not self._allow_close and self._current_screen_id() == "D3":
+                screen = self._screens.get("D3")
+                if isinstance(screen, ApplyLabelsScreen) and screen.is_apply_running():
+                    if not confirm_cancel_label_apply(self):
+                        event.ignore()
+                        return
+                    screen.cancel_apply_and_record()
+                self._leave_current_screen()
+                self.manager.ensure_home(navigate_to="A1")
+                self.manager.window_closed(self)
+                event.accept()
+                return
+            if self.role == "flow" and not self._allow_close and self._current_screen_id() == "E1":
+                folder = self._context.session_folder
+                running = (
+                    folder is not None
+                    and self.controller.find_running_prep_job(folder) is not None
+                )
+                if e1_close_requires_confirm(
+                    has_running_job=running,
+                    queue_status=self._e1_queue_status(),
+                ):
+                    if not self._abort_prep_work(ask_confirm=True):
+                        event.ignore()
+                        return
                 self._leave_current_screen()
                 self.manager.ensure_home(navigate_to="A1")
                 self.manager.window_closed(self)

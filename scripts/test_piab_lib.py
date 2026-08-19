@@ -312,6 +312,216 @@ class CopyLabeledMediaTests(unittest.TestCase):
             self.assertEqual(len(state["original_paths"]), 5)
             self.assertEqual(state["copied_raw"]["host"], str((raw / "Host Raw Video.mp4").resolve()))
 
+    def test_cancel_keeps_finished_copies_and_deletes_partial(self) -> None:
+        from piab_lib import LabelApplyCancelled, move_labeled_media
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump = root / "dump"
+            dump.mkdir()
+            raw = root / "Session" / "Raw"
+            raw.mkdir(parents=True)
+            host_video = dump / "host.mp4"
+            guest_video = dump / "guest.mp4"
+            wide_video = dump / "wide.mp4"
+            host_audio = dump / "host.wav"
+            guest_audio = dump / "guest.wav"
+            host_video.write_bytes(b"h" * 128)
+            guest_video.write_bytes(b"g" * (512 * 1024))
+            wide_video.write_bytes(b"w" * 128)
+            host_audio.write_bytes(b"a" * 128)
+            guest_audio.write_bytes(b"b" * 128)
+
+            finished_first = {"done": False}
+
+            def should_cancel() -> bool:
+                return finished_first["done"]
+
+            def on_copy(src, dest, index, total, phase) -> None:
+                if phase == "done" and dest.name == "Host Raw Video.mp4":
+                    finished_first["done"] = True
+
+            state = {"paths": {"raw": str(raw)}}
+            with self.assertRaises(LabelApplyCancelled) as raised:
+                move_labeled_media(
+                    state,
+                    video_labels={
+                        str(host_video): "host",
+                        str(guest_video): "guest",
+                        str(wide_video): "wide",
+                    },
+                    audio_labels={
+                        str(host_audio): "host",
+                        str(guest_audio): "guest",
+                    },
+                    on_copy=on_copy,
+                    should_cancel=should_cancel,
+                )
+            exc = raised.exception
+            self.assertTrue((raw / "Host Raw Video.mp4").is_file())
+            self.assertFalse((raw / "Guest Raw Video.mp4").exists())
+            self.assertEqual(len(exc.completed), 1)
+            self.assertEqual(exc.completed[0]["dest_name"], "Host Raw Video.mp4")
+            self.assertGreaterEqual(len(exc.remaining), 1)
+            self.assertEqual(exc.remaining[0]["dest_name"], "Guest Raw Video.mp4")
+            if exc.partial is not None:
+                self.assertEqual(exc.partial["dest_name"], "Guest Raw Video.mp4")
+
+    def test_cancel_mid_file_deletes_partial(self) -> None:
+        from piab_lib import LabelApplyCancelled, move_labeled_media
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump = root / "dump"
+            dump.mkdir()
+            raw = root / "Session" / "Raw"
+            raw.mkdir(parents=True)
+            host_video = dump / "host.mp4"
+            guest_video = dump / "guest.mp4"
+            wide_video = dump / "wide.mp4"
+            host_audio = dump / "host.wav"
+            guest_audio = dump / "guest.wav"
+            host_video.write_bytes(b"h" * (1024 * 1024))
+            for path in (guest_video, wide_video, host_audio, guest_audio):
+                path.write_bytes(b"x" * 64)
+
+            checks = {"n": 0}
+
+            def should_cancel() -> bool:
+                checks["n"] += 1
+                return checks["n"] > 3
+
+            state = {"paths": {"raw": str(raw)}}
+            with self.assertRaises(LabelApplyCancelled) as raised:
+                move_labeled_media(
+                    state,
+                    video_labels={
+                        str(host_video): "host",
+                        str(guest_video): "guest",
+                        str(wide_video): "wide",
+                    },
+                    audio_labels={
+                        str(host_audio): "host",
+                        str(guest_audio): "guest",
+                    },
+                    should_cancel=should_cancel,
+                )
+            self.assertFalse((raw / "Host Raw Video.mp4").exists())
+            self.assertEqual(raised.exception.partial["dest_name"], "Host Raw Video.mp4")
+
+    def test_cancel_writes_session_resume_log(self) -> None:
+        from piab_apply_labels import apply_labeled_media_session
+        from piab_lib import LabelApplyCancelled, load_piab_state, save_piab_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            working = Path(tmp) / "Session"
+            dump = Path(tmp) / "dump"
+            raw = working / "Raw"
+            dump.mkdir()
+            raw.mkdir(parents=True)
+            host_video = dump / "host.mp4"
+            guest_video = dump / "guest.mp4"
+            wide_video = dump / "wide.mp4"
+            host_audio = dump / "host.wav"
+            guest_audio = dump / "guest.wav"
+            host_video.write_bytes(b"h" * 128)
+            for path in (guest_video, wide_video, host_audio, guest_audio):
+                path.write_bytes(b"x" * 64)
+            save_piab_state(
+                working,
+                {
+                    "kind": "podcast_in_a_box",
+                    "name": "CancelTest",
+                    "source_duration_sec": 1,
+                    "paths": {"raw": str(raw), "episode_folder": str(working)},
+                    "steps": {},
+                },
+            )
+            finished_first = {"done": False}
+
+            def should_cancel() -> bool:
+                return finished_first["done"]
+
+            def on_copy(src, dest, index, total, phase) -> None:
+                if phase == "done" and dest.name == "Host Raw Video.mp4":
+                    finished_first["done"] = True
+
+            with self.assertRaises(LabelApplyCancelled):
+                apply_labeled_media_session(
+                    working,
+                    video_labels={
+                        str(host_video): "host",
+                        str(guest_video): "guest",
+                        str(wide_video): "wide",
+                    },
+                    audio_labels={
+                        str(host_audio): "host",
+                        str(guest_audio): "guest",
+                    },
+                    on_copy=on_copy,
+                    should_cancel=should_cancel,
+                )
+            state = load_piab_state(working)
+            self.assertEqual(state["resume_at"], "04a_apply_labels")
+            self.assertEqual(state["label_apply"]["status"], "cancelled")
+            self.assertEqual(
+                state["label_apply"]["completed"][0]["dest_name"],
+                "Host Raw Video.mp4",
+            )
+            remaining_names = [row["dest_name"] for row in state["label_apply"]["remaining"]]
+            self.assertIn("Guest Raw Video.mp4", remaining_names)
+            self.assertEqual(state["last_abort"]["interrupted_step"], "04a_apply_labels")
+            self.assertIn("label_paths", state)
+
+    def test_resume_skips_already_copied_raw_files(self) -> None:
+        from piab_lib import move_labeled_media
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dump = root / "dump"
+            dump.mkdir()
+            raw = root / "Session" / "Raw"
+            raw.mkdir(parents=True)
+            host_video = dump / "host.mp4"
+            guest_video = dump / "guest.mp4"
+            wide_video = dump / "wide.mp4"
+            host_audio = dump / "host.wav"
+            guest_audio = dump / "guest.wav"
+            for path, payload in (
+                (host_video, b"host"),
+                (guest_video, b"guest"),
+                (wide_video, b"wide"),
+                (host_audio, b"ha"),
+                (guest_audio, b"ga"),
+            ):
+                path.write_bytes(payload)
+            already = raw / "Host Raw Video.mp4"
+            already.write_bytes(b"host")
+
+            skipped: list[str] = []
+
+            def on_copy(src, dest, index, total, phase) -> None:
+                if phase == "skipped":
+                    skipped.append(dest.name)
+
+            state = {"paths": {"raw": str(raw)}}
+            move_labeled_media(
+                state,
+                video_labels={
+                    str(host_video): "host",
+                    str(guest_video): "guest",
+                    str(wide_video): "wide",
+                },
+                audio_labels={
+                    str(host_audio): "host",
+                    str(guest_audio): "guest",
+                },
+                on_copy=on_copy,
+            )
+            self.assertIn("Host Raw Video.mp4", skipped)
+            self.assertTrue((raw / "Guest Raw Video.mp4").is_file())
+            self.assertEqual((raw / "Host Raw Video.mp4").read_bytes(), b"host")
+
     def test_restore_moved_sources_from_raw_copies(self) -> None:
         from piab_lib import restore_moved_sources
 

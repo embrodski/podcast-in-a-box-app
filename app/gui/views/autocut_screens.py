@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -559,23 +559,22 @@ class SessionNameScreen(ScreenWidget):
             )
         )
 
-        self._default_radio = QRadioButton("")
-        self._custom_radio = QRadioButton("Enter a custom name:")
         self._custom_name = QLineEdit()
         self._custom_name.setPlaceholderText("e.g. Bayeswatch")
-        self._custom_name.setEnabled(False)
-
-        group = QButtonGroup(self)
-        group.addButton(self._default_radio)
-        group.addButton(self._custom_radio)
-        self._default_radio.setChecked(True)
-        self._custom_radio.toggled.connect(
-            lambda checked: self._custom_name.setEnabled(checked)
-        )
-
-        layout.addWidget(self._default_radio)
-        layout.addWidget(self._custom_radio)
+        self._custom_name.textChanged.connect(self._on_custom_edited)
         layout.addWidget(self._custom_name)
+        layout.addWidget(body_label("Enter a Custom Session Name"))
+
+        or_row = QHBoxLayout()
+        or_row.setContentsMargins(24, 8, 0, 8)
+        or_row.addWidget(body_label("Or", word_wrap=False))
+        or_row.addStretch()
+        layout.addLayout(or_row)
+
+        self._default_radio = QRadioButton("")
+        self._default_radio.setAutoExclusive(False)
+        self._default_radio.toggled.connect(self._on_default_toggled)
+        layout.addWidget(self._default_radio)
         layout.addStretch()
 
         row = QHBoxLayout()
@@ -602,40 +601,58 @@ class SessionNameScreen(ScreenWidget):
         if ctx is None:
             return
 
-        if self._default_radio.isChecked():
+        if self._default_radio.isChecked() and not self._custom_name.text().strip():
             if not (
                 ctx.session_name
                 and _looks_like_default_session_name(ctx.session_name)
             ):
                 ctx.session_name = self._suggested_name
-        else:
-            name = self._custom_name.text().strip()
-            if not name:
-                QMessageBox.warning(self, "Name required", "Enter a folder name.")
-                return
-            if "/" in name or "\\" in name:
-                QMessageBox.warning(
-                    self,
-                    "Invalid name",
-                    "Use a single folder name without path separators.",
+            self.navigate.emit("C3")
+            return
+
+        name = self._custom_name.text().strip()
+        if not name:
+            QMessageBox.warning(
+                self,
+                "Name required",
+                "Enter a custom session name, or choose the default date and time.",
+            )
+            return
+        if "/" in name or "\\" in name:
+            QMessageBox.warning(
+                self,
+                "Invalid name",
+                "Use a single folder name without path separators.",
+            )
+            return
+        target = self.controller.work_root / name
+        if target.is_dir() and (target / PIAB_STATE_FILENAME).is_file():
+            if confirm_action(
+                self,
+                title="Existing session",
+                text=f"A session folder named {name!r} already exists.",
+                detail="Open it to resume instead of creating a new session?",
+            ):
+                self.navigate_session.emit(
+                    self.controller.resume_screen_for(target),
+                    target,
                 )
-                return
-            target = self.controller.work_root / name
-            if target.is_dir() and (target / PIAB_STATE_FILENAME).is_file():
-                if confirm_action(
-                    self,
-                    title="Existing session",
-                    text=f"A session folder named {name!r} already exists.",
-                    detail="Open it to resume instead of creating a new session?",
-                ):
-                    self.navigate_session.emit(
-                        self.controller.resume_screen_for(target),
-                        target,
-                    )
-                return
-            ctx.session_name = name
+            return
+        ctx.session_name = name
 
         self.navigate.emit("C3")
+
+    def _on_custom_edited(self, text: str) -> None:
+        if text.strip():
+            self._default_radio.blockSignals(True)
+            self._default_radio.setChecked(False)
+            self._default_radio.blockSignals(False)
+
+    def _on_default_toggled(self, checked: bool) -> None:
+        if checked:
+            self._custom_name.blockSignals(True)
+            self._custom_name.clear()
+            self._custom_name.blockSignals(False)
 
     def on_enter(self) -> None:
         ctx = self.context()
@@ -643,25 +660,25 @@ class SessionNameScreen(ScreenWidget):
             name = ctx.session_name
             if _looks_like_default_session_name(name):
                 self._suggested_name = name
-                self._default_radio.setText(f"Use default date and time ({name})")
+                self._default_radio.setText(f"Use default - date and time ({name})")
                 self._default_radio.setChecked(True)
                 self._custom_name.clear()
             else:
                 self._suggested_name = self.controller.generate_session_name()
                 self._default_radio.setText(
-                    f"Use default date and time ({self._suggested_name})"
+                    f"Use default - date and time ({self._suggested_name})"
                 )
-                self._custom_radio.setChecked(True)
+                self._default_radio.setChecked(False)
                 self._custom_name.setText(name)
         else:
             self._suggested_name = self.controller.generate_session_name()
             self._default_radio.setText(
-                f"Use default date and time ({self._suggested_name})"
+                f"Use default - date and time ({self._suggested_name})"
             )
-            self._default_radio.setChecked(True)
+            self._default_radio.setChecked(False)
             self._custom_name.clear()
 
-        self._custom_name.setEnabled(self._custom_radio.isChecked())
+        QTimer.singleShot(0, self._custom_name.setFocus)
 
 
 class CreateSessionScreen(ScreenWidget):

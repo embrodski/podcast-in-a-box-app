@@ -9,6 +9,7 @@ RESUME_AT_TO_SCREEN: dict[str, str] = {
     "02_create_folder": "C3",
     "03_label_videos": "D1",
     "04_label_audio": "D2",
+    "04a_apply_labels": "D3",
     "05_estimate_prep": "D4",
     "06_conversation_sync": "E1",
     "07_deroom_placeholder": "E1",

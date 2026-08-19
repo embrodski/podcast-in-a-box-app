@@ -23,6 +23,14 @@ from piab_lib import (
 
 FAST_PREVIEW_DIR_NAME = "Preview Files"
 PREVIEW_PREFIX = "Preview "
+# ElevenLabs writes these next to the prepped WAV; only the JSON path is stored in state.
+ELEVENLABS_TRANSCRIPT_JSON_SUFFIX = " Transcript.json"
+ELEVENLABS_TRANSCRIPT_TEXT_SUFFIX = " Text.txt"
+ELEVENLABS_TRANSCRIPT_ID_SUFFIX = " Transcription ID.txt"
+ELEVENLABS_TRANSCRIPT_SIDECARS: tuple[str, ...] = (
+    ELEVENLABS_TRANSCRIPT_TEXT_SUFFIX,
+    ELEVENLABS_TRANSCRIPT_ID_SUFFIX,
+)
 FAST_PREVIEW_CLIP_SEC = 300.0
 # Observed Fast Preview wall-clock is ~3× faster than the shared prep formula.
 FAST_PREVIEW_ESTIMATE_DIVISOR = 3.0
@@ -321,6 +329,7 @@ def _copy_preview_file(
     working_folder: Path,
     *,
     allow_overwrite: bool,
+    copy_sidecars: bool = True,
 ) -> Path:
     from harness_overwrite_guard import refuse_overwrite
 
@@ -330,7 +339,38 @@ def _copy_preview_file(
     import shutil
 
     shutil.copy2(src, dest)
+    if copy_sidecars:
+        _copy_elevenlabs_sidecars(
+            src, working_folder, allow_overwrite=allow_overwrite
+        )
     return dest
+
+
+def _copy_elevenlabs_sidecars(
+    src: Path,
+    working_folder: Path,
+    *,
+    allow_overwrite: bool,
+) -> list[Path]:
+    """Copy Text.txt / Transcription ID.txt when promoting a Transcript.json."""
+    name = src.name
+    if not name.endswith(ELEVENLABS_TRANSCRIPT_JSON_SUFFIX):
+        return []
+    stem = name[: -len(ELEVENLABS_TRANSCRIPT_JSON_SUFFIX)]
+    copied: list[Path] = []
+    for suffix in ELEVENLABS_TRANSCRIPT_SIDECARS:
+        sibling = src.parent / f"{stem}{suffix}"
+        if not sibling.is_file():
+            continue
+        copied.append(
+            _copy_preview_file(
+                sibling,
+                working_folder,
+                allow_overwrite=allow_overwrite,
+                copy_sidecars=False,
+            )
+        )
+    return copied
 
 
 def _rewrite_preview_paths_in_value(

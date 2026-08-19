@@ -51,6 +51,7 @@ def apply_labels(
     audio_labels: dict[str, str],
     allow_overwrite: bool = False,
     on_copy: Callable[[Path, Path, int, int, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict:
     ensure_scripts_path()
     from harness_overwrite_guard import HarnessOverwriteError
@@ -63,6 +64,7 @@ def apply_labels(
             audio_labels=audio_labels,
             allow_overwrite=allow_overwrite,
             on_copy=on_copy,
+            should_cancel=should_cancel,
         )
     except HarnessOverwriteError as exc:
         raise RuntimeError(str(exc)) from exc

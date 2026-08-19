@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Callable
 
-PIAB_ERROR_REPORT_TO = "embrodski@gmail.com"
+PIAB_ERROR_REPORT_TO = "lighthavenpodcastroom@gmail.com"
 PIAB_ERROR_REPORT_SUBJECT = "PIAB autocut error"
 
 

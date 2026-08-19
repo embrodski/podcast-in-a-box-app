@@ -4,7 +4,7 @@ from __future__ import annotations
 
 SCREEN_TITLES: dict[str, str] = {
     "A0": "System check",
-    "A1": "Podcast in a Box",
+    "A1": "Home Screen",
     "A2": "Resume session",
     "A3": "New session",
     "A4": "Clean old working files",

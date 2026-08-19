@@ -10,7 +10,11 @@ from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout
 
 from app.controller.prep_progress import clear_prep_failure, failure_summary
 from app.controller.storage_gate import assess_prep_storage
-from app.gui.dialogs import confirm_action, confirm_hold_outside_queue
+from app.gui.dialogs import (
+    REMOVE_FROM_QUEUE_TEXT,
+    confirm_action,
+    confirm_hold_outside_queue,
+)
 from app.gui.failure_context import navigate_to_failure
 from app.gui.storage_prompts import gate_low_disk, maybe_offer_clean_on_disk_failure
 from app.gui.widgets.path_banner import PathBanner
@@ -23,6 +27,17 @@ def _session_folder(screen: ScreenWidget) -> Path | None:
     if ctx is None or ctx.session_folder is None:
         return None
     return ctx.session_folder
+
+
+def e1_close_requires_confirm(
+    *,
+    has_running_job: bool,
+    queue_status: str | None,
+) -> bool:
+    """True when closing E1 should confirm and abort/cancel, like F4."""
+    if has_running_job:
+        return True
+    return queue_status in {"queued", "running"}
 
 
 class ProcessingScreen(ScreenWidget):
@@ -163,6 +178,10 @@ class ProcessingScreen(ScreenWidget):
         self._poll.stop()
         super().hideEvent(event)
 
+    def prepare_for_abort_close(self) -> None:
+        self._poll.stop()
+        self._prep_job_id = None
+
     def _start_processing_job(
         self,
         folder: Path,
@@ -301,11 +320,7 @@ class ProcessingScreen(ScreenWidget):
             if not confirm_action(
                 self,
                 title="Remove from queue?",
-                text=(
-                    "This will cancel the autocut completely, and remove this job "
-                    "from the queue. Your video and audio files will remain untouched "
-                    "where they are."
-                ),
+                text=REMOVE_FROM_QUEUE_TEXT,
             ):
                 return
             self.controller.cancel_queued_job(folder, "fast_preview")

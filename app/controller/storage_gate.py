@@ -35,6 +35,16 @@ def bytes_human(n: int) -> str:
     return f"{gib:.1f} GB"
 
 
+CLEAN_WORKING_FILES_BUTTON = "Clean Old Working Files"
+
+
+def clean_working_files_button_text(free_bytes: int | None) -> str:
+    if free_bytes is None:
+        return CLEAN_WORKING_FILES_BUTTON
+    gb = max(0, int(round(free_bytes / (1024**3))))
+    return f"{CLEAN_WORKING_FILES_BUTTON} ({gb} GB free)"
+
+
 def free_bytes_at(
     root: Path,
     *,

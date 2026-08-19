@@ -19,7 +19,7 @@ from app.gui.views.clean_working_screen import CleanWorkingFilesScreen
 from app.gui.views.done_screen import DoneScreen
 from app.gui.views.new_session_screen import NewSessionScreen
 from app.gui.views.placeholder_screen import PlaceholderScreen
-from app.gui.views.processing_screen import ProcessingScreen
+from app.gui.views.processing_screen import ProcessingScreen, e1_close_requires_confirm
 from app.gui.views.preflight_screen import PreflightScreen
 from app.gui.views.resume_screen import ResumeScreen
 from app.gui.views.recording_screens import (
@@ -57,6 +57,7 @@ __all__ = [
     "PlaceholderScreen",
     "PreflightScreen",
     "ProcessingScreen",
+    "e1_close_requires_confirm",
     "RecordingCompleteScreen",
     "RecordingSavedScreen",
     "RecordingScreen",

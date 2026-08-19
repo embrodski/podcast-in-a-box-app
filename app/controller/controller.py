@@ -210,8 +210,7 @@ class PiabController:
         return get_recording_phrases()
 
     def recording_instructions(self) -> str:
-        phrases = get_recording_phrases()
-        return recording_instructions(phrases)
+        return recording_instructions()
 
     def load_session_state(self, working_folder: Path) -> dict:
         return load_session_state(working_folder.resolve())
@@ -313,6 +312,7 @@ class PiabController:
         audio_labels: dict[str, str],
         allow_overwrite: bool = False,
         on_copy=None,
+        should_cancel=None,
     ) -> dict:
         return apply_labels(
             working_folder,
@@ -320,6 +320,7 @@ class PiabController:
             audio_labels=audio_labels,
             allow_overwrite=allow_overwrite,
             on_copy=on_copy,
+            should_cancel=should_cancel,
         )
 
     def validate_video_labels(self, labels: dict[str, str]) -> None:

@@ -18,7 +18,11 @@ from PySide6.QtWidgets import (
 
 from app.controller.prep_progress import clear_prep_failure, failure_summary
 from app.controller.storage_gate import assess_render_storage
-from app.gui.dialogs import confirm_action, confirm_hold_outside_queue
+from app.gui.dialogs import (
+    REMOVE_FROM_QUEUE_TEXT,
+    confirm_action,
+    confirm_hold_outside_queue,
+)
 from app.gui.failure_context import navigate_to_failure
 from app.gui.storage_prompts import gate_low_disk, maybe_offer_clean_on_disk_failure
 from app.gui.widgets.path_banner import PathBanner
@@ -806,11 +810,7 @@ class FullRenderScreen(ScreenWidget):
             if not confirm_action(
                 self,
                 title="Remove from queue?",
-                text=(
-                    "This will cancel the autocut completely, and remove this job "
-                    "from the queue. Your video and audio files will remain untouched "
-                    "where they are."
-                ),
+                text=REMOVE_FROM_QUEUE_TEXT,
             ):
                 return
             self.controller.cancel_queued_job(folder, "full")
@@ -821,11 +821,7 @@ class FullRenderScreen(ScreenWidget):
             self,
             title="Abort full render?",
             text="Stop the current render?",
-            detail=(
-                "This will cancel the autocut completely, and remove this job "
-                "from the queue. Your video and audio files will remain untouched "
-                "where they are."
-            ),
+            detail=REMOVE_FROM_QUEUE_TEXT,
         ):
             return
 

@@ -8,6 +8,13 @@ from PySide6.QtWidgets import QMessageBox, QWidget
 
 ExistingSessionChoice = Literal["resume", "choose_different", "force_new"]
 
+REMOVE_FROM_QUEUE_TEXT = (
+    "This will cancel the autocut completely, and remove this job "
+    "from the queue. You will still be able to resume this session at a later "
+    "date from the Resume Session window. Your video and audio files will remain "
+    "untouched where they are."
+)
+
 
 def confirm_close_while_busy(parent: QWidget, reasons: list[str]) -> bool:
     """Return True if the user chose to abort and quit."""
@@ -38,6 +45,19 @@ def confirm_hold_outside_queue(parent: QWidget) -> bool:
     box.setInformativeText(
         "You can manually restart it later from Home (On hold) or Resume session. "
         "It will not start automatically."
+    )
+    box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+    box.setDefaultButton(QMessageBox.No)
+    return box.exec() == QMessageBox.Yes
+
+
+def confirm_cancel_label_apply(parent: QWidget) -> bool:
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle("Cancel labeling?")
+    box.setText(
+        "Closing this window will cancel the labeling and movement of these files. "
+        "Are you sure you wish to cancel?"
     )
     box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
     box.setDefaultButton(QMessageBox.No)

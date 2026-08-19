@@ -38,6 +38,7 @@ class ResumeRouterTests(unittest.TestCase):
         self.assertEqual(resume_screen_for("13_full_prep_after_preview"), "F4")
         self.assertEqual(resume_screen_for("14_done"), "F5")
         self.assertEqual(resume_screen_for("cleaned"), "A1")
+        self.assertEqual(resume_screen_for("04a_apply_labels"), "D3")
 
     def test_unknown_defaults_to_home(self) -> None:
         self.assertEqual(resume_screen_for("unknown_step"), "A1")

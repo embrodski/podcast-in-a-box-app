@@ -220,7 +220,7 @@ Poll `podcast-in-a-box.json` (`steps`, `resume_at`) and `Temp/harness-FAILURE.js
 |-----------|-------|---------------------|
 | **F1** | Something went wrong | Failed step / abort |
 
-On any autocut step failure (prep, Fast Preview, or full render): an application-modal popup says the autocut failed and a bug report was submitted, and that original files are safe. `notify_harness_failure` also emails **embrodski@gmail.com** with subject **PIAB autocut error** and that session’s process-log row plus `Temp/harness-FAILURE.txt`. User abort and overwrite-blocked (files already exist) do not send a bug report.
+On any autocut step failure (prep, Fast Preview, or full render): an application-modal popup says the autocut failed and a bug report was submitted, and that original files are safe. `notify_harness_failure` also emails **lighthavenpodcastroom@gmail.com** with subject **PIAB autocut error** and that session’s process-log row plus `Temp/harness-FAILURE.txt`. User abort and overwrite-blocked (files already exist) do not send a bug report.
 | **F2a** | Sync offset A/B choice | `10a_sync_offset_approval` — side-by-side players |
 | **F2** | Review 1-minute test | `11_one_min_approval` |
 | **F3** | Estimate B | `12_estimate_full` |

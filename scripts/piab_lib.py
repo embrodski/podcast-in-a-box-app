@@ -44,6 +44,28 @@ GUEST_RAW_AUDIO = "Guest Raw Audio.wav"
 
 VIDEO_ROLES = ("host", "guest", "wide", "do_not_use")
 AUDIO_ROLES = ("host", "guest", "do_not_use")
+APPLY_LABELS_RESUME_AT = "04a_apply_labels"
+LABEL_COPY_CHUNK_BYTES = 256 * 1024
+
+
+class CopyCancelled(Exception):
+    """Raised when a labeled-file copy is interrupted mid-transfer."""
+
+
+class LabelApplyCancelled(Exception):
+    """Raised when apply-labels is cancelled after zero or more completed copies."""
+
+    def __init__(
+        self,
+        *,
+        completed: list[dict],
+        remaining: list[dict],
+        partial: dict | None = None,
+    ) -> None:
+        self.completed = completed
+        self.remaining = remaining
+        self.partial = partial
+        super().__init__("Label apply cancelled.")
 
 # Coarse realtime multipliers for Estimate A/B (wall-clock vs source duration).
 EST_CONVERSATION_SYNC_X = 0.08
@@ -1002,6 +1024,84 @@ def validate_audio_labels(labels: dict[str, str]) -> None:
             raise ValueError(f"Invalid audio role {role!r}")
 
 
+def labeled_copy_record(
+    src: Path,
+    dest: Path,
+    *,
+    role: str,
+    kind: str,
+) -> dict:
+    return {
+        "src": str(src.resolve()),
+        "dest": str(dest.resolve()),
+        "dest_name": dest.name,
+        "role": role,
+        "kind": kind,
+    }
+
+
+def plan_labeled_copies(
+    raw: Path,
+    *,
+    video_labels: dict[str, str],
+    audio_labels: dict[str, str],
+) -> list[dict]:
+    planned: list[dict] = []
+    for src_str, role in video_labels.items():
+        if role == "do_not_use":
+            continue
+        src = Path(src_str)
+        if not src.is_file():
+            raise FileNotFoundError(f"Labeled video missing: {src}")
+        dest = raw / role_to_video_name(role)
+        planned.append(labeled_copy_record(src, dest, role=role, kind="video"))
+    for src_str, role in audio_labels.items():
+        if role == "do_not_use":
+            continue
+        src = Path(src_str)
+        if not src.is_file():
+            raise FileNotFoundError(f"Labeled audio missing: {src}")
+        dest = raw / role_to_audio_name(role)
+        planned.append(labeled_copy_record(src, dest, role=role, kind="audio"))
+    return planned
+
+
+def copy_file_cancellable(
+    src: Path,
+    dest: Path,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    chunk_bytes: int = LABEL_COPY_CHUNK_BYTES,
+) -> None:
+    """Copy ``src`` to ``dest`` in chunks so a cancel can stop and delete the partial."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with src.open("rb") as incoming, dest.open("wb") as outgoing:
+            while True:
+                if should_cancel is not None and should_cancel():
+                    raise CopyCancelled()
+                chunk = incoming.read(chunk_bytes)
+                if not chunk:
+                    break
+                outgoing.write(chunk)
+                if should_cancel is not None and should_cancel():
+                    raise CopyCancelled()
+        shutil.copystat(src, dest)
+    except Exception:
+        if dest.exists():
+            dest.unlink()
+        raise
+
+
+def _dest_already_complete(src: Path, dest: Path) -> bool:
+    if not dest.is_file():
+        return False
+    try:
+        return dest.stat().st_size == src.stat().st_size
+    except OSError:
+        return False
+
+
 def move_labeled_media(
     state: dict,
     *,
@@ -1009,6 +1109,7 @@ def move_labeled_media(
     audio_labels: dict[str, str],
     allow_overwrite: bool = False,
     on_copy: Callable[[Path, Path, int, int, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict:
     """Copy labeled sources into Raw with standard names. Source files are never moved."""
     from harness_overwrite_guard import refuse_overwrite
@@ -1020,69 +1121,62 @@ def move_labeled_media(
     original_paths: dict[str, str] = {}
     copied: dict[str, str] = {}
 
-    planned: list[tuple[Path, Path]] = []
-    for src_str, role in video_labels.items():
-        if role == "do_not_use":
-            continue
-        src = Path(src_str)
-        if not src.is_file():
-            raise FileNotFoundError(f"Labeled video missing: {src}")
-        planned.append((src, raw / role_to_video_name(role)))
-
-    for src_str, role in audio_labels.items():
-        if role == "do_not_use":
-            continue
-        src = Path(src_str)
-        if not src.is_file():
-            raise FileNotFoundError(f"Labeled audio missing: {src}")
-        planned.append((src, raw / role_to_audio_name(role)))
-
+    planned = plan_labeled_copies(
+        raw,
+        video_labels=video_labels,
+        audio_labels=audio_labels,
+    )
     total = len(planned)
+    completed: list[dict] = []
 
-    def _copy_labeled_source(src: Path, dest: Path, *, index: int) -> None:
-        if src.resolve() == dest.resolve():
+    def _raise_cancelled(*, remaining: list[dict], partial: dict | None) -> None:
+        raise LabelApplyCancelled(
+            completed=list(completed),
+            remaining=remaining,
+            partial=partial,
+        )
+
+    for index, item in enumerate(planned, start=1):
+        if should_cancel is not None and should_cancel():
+            _raise_cancelled(remaining=planned[index - 1 :], partial=None)
+        src = Path(item["src"])
+        dest = Path(item["dest"])
+        if src.resolve() == dest.resolve() or _dest_already_complete(src, dest):
             if on_copy:
                 on_copy(src, dest, index, total, "skipped")
-            return
+            completed.append(item)
+            original_paths[dest.name] = str(src.resolve())
+            key = item["role"] if item["kind"] == "video" else f"{item['role']}_audio"
+            copied[key] = str(dest.resolve())
+            continue
         if on_copy:
             on_copy(src, dest, index, total, "start")
         refuse_overwrite(dest, allow_overwrite=allow_overwrite)
         if dest.exists():
             dest.unlink()
-        shutil.copy2(src, dest)
+        try:
+            copy_file_cancellable(src, dest, should_cancel=should_cancel)
+        except CopyCancelled:
+            _raise_cancelled(remaining=planned[index - 1 :], partial=item)
         if on_copy:
             on_copy(src, dest, index, total, "done")
-
-    video_index = 0
-    for src_str, role in video_labels.items():
-        if role == "do_not_use":
-            continue
-        src = Path(src_str)
-        dest = raw / role_to_video_name(role)
-        video_index += 1
-        _copy_labeled_source(src, dest, index=video_index)
+        completed.append(item)
         original_paths[dest.name] = str(src.resolve())
-        copied[role] = str(dest.resolve())
-
-    audio_base = video_index
-    audio_i = 0
-    for src_str, role in audio_labels.items():
-        if role == "do_not_use":
-            continue
-        src = Path(src_str)
-        dest = raw / role_to_audio_name(role)
-        audio_i += 1
-        _copy_labeled_source(src, dest, index=audio_base + audio_i)
-        original_paths[dest.name] = str(src.resolve())
-        copied[role + "_audio"] = str(dest.resolve())
+        key = item["role"] if item["kind"] == "video" else f"{item['role']}_audio"
+        copied[key] = str(dest.resolve())
 
     state["labels"] = {
         "videos": {Path(k).name: v for k, v in video_labels.items()},
         "audios": {Path(k).name: v for k, v in audio_labels.items()},
     }
+    state["label_paths"] = {
+        "videos": {str(Path(k).resolve()): v for k, v in video_labels.items()},
+        "audios": {str(Path(k).resolve()): v for k, v in audio_labels.items()},
+    }
     state["original_paths"] = original_paths
     state["copied_raw"] = copied
     state["moved_raw"] = copied
+    state.pop("label_apply", None)
     return state
 
 

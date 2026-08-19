@@ -226,6 +226,7 @@ class WindowManager:
         home = self.ensure_home(navigate_to="A1")
         if window in self.flows:
             self.flows.remove(window)
+        window.allow_close()
         window.close()
         home.show()
         home.raise_()

@@ -13,6 +13,7 @@ from app.controller.storage_gate import (
     assess_prep_storage,
     assess_recording_storage,
     assess_render_storage,
+    clean_working_files_button_text,
     largest_prep_file_bytes,
     largest_raw_video_bytes,
 )
@@ -106,6 +107,16 @@ class StorageGateTests(unittest.TestCase):
             )
             self.assertEqual(assessment.level, "insufficient")
             self.assertEqual(assessment.required_bytes, MIN_DISK_BYTES_WARN)
+
+    def test_clean_button_text_includes_free_gb(self) -> None:
+        text = clean_working_files_button_text(120 * 1024**3)
+        self.assertEqual(text, "Clean Old Working Files (120 GB free)")
+
+    def test_clean_button_text_without_free_space(self) -> None:
+        self.assertEqual(
+            clean_working_files_button_text(None),
+            "Clean Old Working Files",
+        )
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QMessageBox, QWidget
 
+from app.gui.dialogs import REMOVE_FROM_QUEUE_TEXT
+
 
 def prompt_interrupted_job(
     parent: QWidget,
@@ -32,11 +34,7 @@ def prompt_interrupted_job(
     confirm = QMessageBox(parent)
     confirm.setIcon(QMessageBox.Warning)
     confirm.setWindowTitle("Confirm abort")
-    confirm.setText(
-        "This will cancel the autocut completely, and remove this job "
-        "from the queue. Your video and audio files will remain untouched "
-        "where they are."
-    )
+    confirm.setText(REMOVE_FROM_QUEUE_TEXT)
     confirm.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
     confirm.setDefaultButton(QMessageBox.No)
     if confirm.exec() == QMessageBox.Yes:

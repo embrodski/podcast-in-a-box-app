@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections import defaultdict
 from pathlib import Path
 
@@ -427,6 +428,7 @@ class ApplyLabelsScreen(ScreenWidget):
     def __init__(self, controller, parent=None) -> None:
         super().__init__(controller, parent)
         self._worker: CallableWorker | None = None
+        self._cancel = threading.Event()
         self._log_lines: list[str] = []
 
         layout = QVBoxLayout(self)
@@ -455,6 +457,8 @@ class ApplyLabelsScreen(ScreenWidget):
             self._detail.setText("Missing session or label data.")
             return
         if not ctx.video_labels or not ctx.audio_labels:
+            self._restore_labels_from_state(ctx, folder)
+        if not ctx.video_labels or not ctx.audio_labels:
             self._detail.setText("Go back and complete camera and microphone labels.")
             return
 
@@ -463,6 +467,7 @@ class ApplyLabelsScreen(ScreenWidget):
         self._log_lines = ["Preparing to copy files…"]
         self._log.setPlainText(self._log_lines[0])
         self._retry.hide()
+        self._cancel.clear()
 
         if self._worker is not None and self._worker.isRunning():
             return
@@ -520,7 +525,40 @@ class ApplyLabelsScreen(ScreenWidget):
             audio_labels=ctx.audio_labels or {},
             allow_overwrite=ctx.allow_overwrite,
             on_copy=on_copy,
+            should_cancel=self._cancel.is_set,
         )
+
+    def is_apply_running(self) -> bool:
+        return self._worker is not None and self._worker.isRunning()
+
+    def cancel_apply_and_record(self) -> None:
+        """Stop the in-flight copy, persist progress, and wait for the worker."""
+        self._cancel.set()
+        worker = self._worker
+        if worker is None:
+            return
+        for signal in (worker.finished_ok, worker.failed, worker.progress):
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        if worker.isRunning():
+            worker.wait(60_000)
+
+    def _restore_labels_from_state(self, ctx, folder: Path) -> None:
+        try:
+            state = self.controller.load_session_state(folder)
+        except Exception:
+            return
+        paths = state.get("label_paths")
+        if not isinstance(paths, dict):
+            return
+        videos = paths.get("videos")
+        audios = paths.get("audios")
+        if isinstance(videos, dict) and videos:
+            ctx.video_labels = {str(k): str(v) for k, v in videos.items()}
+        if isinstance(audios, dict) and audios:
+            ctx.audio_labels = {str(k): str(v) for k, v in audios.items()}
 
     def _on_fail(self, message: str) -> None:
         self._headline.setText("Could not apply labels")

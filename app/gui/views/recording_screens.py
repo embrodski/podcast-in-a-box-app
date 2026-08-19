@@ -40,9 +40,12 @@ class _StatusScreen(ScreenWidget):
 
         layout.addStretch()
 
+        self._enter_token = 0
+        self._stay_after_success = False
+
         row = QHBoxLayout()
         self._back = QPushButton("Back")
-        self._back.clicked.connect(lambda: self.navigate.emit("A3"))
+        self._back.clicked.connect(self._go_back)
         row.addWidget(self._back)
         row.addStretch()
         self._retry = QPushButton("Retry")
@@ -55,8 +58,32 @@ class _StatusScreen(ScreenWidget):
         row.addWidget(self._next)
         layout.addLayout(row)
 
+    def _go_back(self) -> None:
+        self.navigate.emit("C1")
+
     def _go_next(self) -> None:
         raise NotImplementedError
+
+    def on_leave(self) -> None:
+        self._enter_token += 1
+
+    def _advance_after_ok(self, screen_id: str) -> None:
+        if self._stay_after_success:
+            self._next.show()
+            self._next.setEnabled(True)
+            return
+        token = self._enter_token
+        QTimer.singleShot(400, lambda: self._emit_if_current(token, screen_id))
+
+    def _emit_if_current(self, token: int, screen_id: str) -> None:
+        if token != self._enter_token or not self.isVisible():
+            return
+        self.navigate.emit(screen_id)
+
+    def _mark_skip_vmix_auto_advance(self) -> None:
+        ctx = self.context()
+        if ctx is not None:
+            ctx.skip_vmix_auto_advance = True
 
     def _set_busy(self, message: str) -> None:
         self._detail.setText(message)
@@ -89,8 +116,18 @@ class VmixEnsureScreen(_StatusScreen):
         self.navigate.emit(self._next_screen)
 
     def on_enter(self) -> None:
+        self._enter_token += 1
+        ctx = self.context()
+        stay = bool(ctx is not None and ctx.skip_vmix_auto_advance)
+        if ctx is not None:
+            ctx.skip_vmix_auto_advance = False
+        self._stay_after_success = stay
         self._retry.hide()
         self._next.hide()
+        if stay:
+            self._detail.setText("vMix is ready.")
+            self._next.show()
+            return
         self._set_busy("Checking whether vMix is running…")
         self._run(self.controller.ensure_vmix_step, on_ok=self._on_ok)
 
@@ -99,7 +136,7 @@ class VmixEnsureScreen(_StatusScreen):
             self._set_error(result.message or "vMix could not be started.")
             return
         self._detail.setText(result.message or "vMix is ready.")
-        QTimer.singleShot(400, lambda: self.navigate.emit("B2"))
+        self._advance_after_ok("B2")
 
 
 class VmixPresetScreen(_StatusScreen):
@@ -107,14 +144,18 @@ class VmixPresetScreen(_StatusScreen):
 
     def __init__(self, controller, parent=None) -> None:
         super().__init__("B2", controller, parent)
-        self._headline.setText("Loading podcast preset")
-        self._back.clicked.disconnect()
-        self._back.clicked.connect(lambda: self.navigate.emit("B1"))
+        self._headline.setText("Opening vMix and loading preset. This will take a minute.")
+
+    def _go_back(self) -> None:
+        self._mark_skip_vmix_auto_advance()
+        self.navigate.emit("B1")
 
     def _go_next(self) -> None:
         self.navigate.emit("B3")
 
     def on_enter(self) -> None:
+        self._enter_token += 1
+        self._stay_after_success = False
         self._retry.hide()
         self._next.hide()
         self._set_busy("Opening the PIAB vMix preset…")
@@ -126,7 +167,7 @@ class VmixPresetScreen(_StatusScreen):
             return
         label = result.preset_path or result.message or "Preset loaded."
         self._detail.setText(label)
-        QTimer.singleShot(400, lambda: self.navigate.emit("B3"))
+        self._advance_after_ok("B3")
 
 
 class CameraSetupScreen(ScreenWidget):
@@ -176,7 +217,7 @@ class CameraSetupScreen(ScreenWidget):
 
         row = QHBoxLayout()
         back = QPushButton("Back")
-        back.clicked.connect(lambda: self.navigate.emit("B2"))
+        back.clicked.connect(self._go_back)
         row.addWidget(back)
         row.addStretch()
         cont = QPushButton("Continue")
@@ -185,6 +226,9 @@ class CameraSetupScreen(ScreenWidget):
         cont.clicked.connect(lambda: self.navigate.emit("B4"))
         row.addWidget(cont)
         layout.addLayout(row)
+
+    def _go_back(self) -> None:
+        self.navigate.emit("C1")
 
 
 class RecordingScreen(ScreenWidget):
@@ -215,11 +259,16 @@ class RecordingScreen(ScreenWidget):
         self._recording_panel = QWidget()
         rec = QVBoxLayout(self._recording_panel)
         rec.setContentsMargins(0, 0, 0, 0)
-        rec.addWidget(heading_label("Recording"))
+        heading = heading_label("Recording")
+        heading.setAlignment(Qt.AlignCenter)
+        rec.addWidget(heading)
         self._instructions = body_label("")
+        self._instructions.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self._instructions.setTextFormat(Qt.TextFormat.RichText)
         rec.addWidget(self._instructions)
 
         self._status = body_label("")
+        self._status.setAlignment(Qt.AlignCenter)
         rec.addWidget(self._status)
 
         rec.addStretch()
