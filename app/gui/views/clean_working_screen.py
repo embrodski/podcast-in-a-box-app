@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -56,11 +57,6 @@ class CleanWorkingFilesScreen(ScreenWidget):
         self._scroll.setWidget(self._list_host)
         layout.addWidget(self._scroll, stretch=1)
 
-        self._scan = QPushButton("Scan For Lost Sessions")
-        self._scan.setMinimumHeight(40)
-        self._scan.clicked.connect(self._on_scan)
-        layout.addWidget(self._scan)
-
         self._status = body_label("")
         self._status.setStyleSheet("color: #666;")
         layout.addWidget(self._status)
@@ -75,6 +71,15 @@ class CleanWorkingFilesScreen(ScreenWidget):
         self._clean.clicked.connect(self._on_clean)
         row.addWidget(self._clean)
         layout.addLayout(row)
+
+        self._scan = QPushButton("Scan For Lost Sessions")
+        self._scan.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self._scan.setStyleSheet("padding: 6px 14px;")
+        self._scan.clicked.connect(self._on_scan)
+        scan_row = QHBoxLayout()
+        scan_row.addStretch()
+        scan_row.addWidget(self._scan, alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(scan_row)
 
     def on_enter(self) -> None:
         self._status.setText("")
