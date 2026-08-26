@@ -15,7 +15,11 @@ from app.controller.lock import AppLock
 from app.controller.overwrite import check_overwrite_risk
 from app.controller.preflight import run_preflight
 from app.controller.resume_router import resume_screen_for
-from app.controller.prep_progress import prep_needs_resume, read_prep_progress
+from app.controller.prep_progress import (
+    FAST_PREVIEW_ETA_DISPLAY,
+    prep_needs_resume,
+    read_prep_progress,
+)
 from app.controller.failure_info import read_failure_info, retry_screen_for_failure
 from app.controller.flag_report import load_flag_report_text
 from app.controller.render_progress import read_render_progress
@@ -34,6 +38,7 @@ class ResumeRouterTests(unittest.TestCase):
         self.assertEqual(resume_screen_for("09_transcribe"), "E1")
         self.assertEqual(resume_screen_for("10a_sync_offset_approval"), "F2a")
         self.assertEqual(resume_screen_for("11_one_min_approval"), "F2")
+        self.assertEqual(resume_screen_for("12_estimate_full"), "F4")
         self.assertEqual(resume_screen_for("13_queued_full"), "F4")
         self.assertEqual(resume_screen_for("13_full_prep_after_preview"), "F4")
         self.assertEqual(resume_screen_for("14_done"), "F5")
@@ -129,6 +134,22 @@ class PrepProgressTests(unittest.TestCase):
             self.assertIn("1-minute", progress.current_label)
             self.assertTrue(progress.step_lines[0].startswith("✓"))
             self.assertTrue(progress.step_lines[-1].startswith("→"))
+
+    def test_fast_preview_uses_fixed_four_minute_eta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            started = datetime(2026, 8, 26, 19, 0, 0, tzinfo=timezone.utc)
+            state = {
+                "resume_at": "08p_video_sync",
+                "steps": {
+                    "08p_video_sync": {
+                        "status": "in_progress",
+                        "started_at": started.isoformat(),
+                    }
+                },
+            }
+            progress = read_prep_progress(state, folder, now=started)
+            self.assertEqual(progress.step_eta_display, FAST_PREVIEW_ETA_DISPLAY)
 
 
 class WorkRootTests(unittest.TestCase):
@@ -270,6 +291,41 @@ class AppLockTests(unittest.TestCase):
             lock.set_recording_active(True)
             self.assertTrue(lock.is_recording_active())
 
+    def test_is_piab_app_command_line(self) -> None:
+        from app.controller.lock import is_piab_app_command_line
+
+        self.assertTrue(
+            is_piab_app_command_line(
+                r'"C:\Python\pythonw.exe" -m app.main'
+            )
+        )
+        self.assertFalse(is_piab_app_command_line("cursor.exe"))
+        self.assertFalse(is_piab_app_command_line(None))
+
+    def test_terminate_other_piab_apps_skips_non_piab(self) -> None:
+        from app.controller import lock as lock_mod
+
+        calls: list[int] = []
+
+        def fake_pids(*, exclude: int) -> list[int]:
+            return [111, 222]
+
+        def fake_command(pid: int) -> str | None:
+            if pid == 111:
+                return r'"C:\Python\pythonw.exe" -m app.main'
+            return "notepad.exe"
+
+        with (
+            patch.object(lock_mod, "_piab_app_pids", fake_pids),
+            patch.object(lock_mod, "_command_line_for_pid", fake_command),
+            patch.object(lock_mod, "_terminate_pid", lambda pid: calls.append(pid)),
+            patch.object(lock_mod, "_wait_until_dead", lambda pid, timeout_sec=5.0: True),
+        ):
+            killed, error = lock_mod.terminate_other_piab_apps()
+        self.assertEqual(killed, [111])
+        self.assertNotIn(222, calls)
+        self.assertIn("222", error)
+
 
 class JobRunnerTests(unittest.TestCase):
     def test_abort_subprocess(self) -> None:
@@ -334,6 +390,7 @@ class JobRunnerTests(unittest.TestCase):
             self.assertEqual(finished[0].id, job.id)
             self.assertEqual(finished[0].status, "failed")
             self.assertEqual(runner.poll(), [])
+            self.assertIsNone(runner.get_job(job.id))
         finally:
             script.unlink(missing_ok=True)
 

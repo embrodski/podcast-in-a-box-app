@@ -38,17 +38,37 @@ def main(argv: list[str] | None = None) -> int:
     _load_secrets()
     migrate_legacy_work_files()
 
-    controller = PiabController()
-    ok, message = controller.acquire_app_lock(force=args.force_lock)
-    if not ok:
-        print(message, file=sys.stderr)
-        return 1
-
     apply_process_app_user_model_id()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_DISPLAY_NAME)
     app.setOrganizationName(APP_ORGANIZATION_NAME)
     apply_application_icon(app)
+
+    controller = PiabController()
+    ok, message = controller.acquire_app_lock(force=args.force_lock)
+    if not ok:
+        from PySide6.QtWidgets import QMessageBox
+
+        from app.gui.dialogs import prompt_replace_running_instance
+
+        existing = controller.lock.read()
+        if prompt_replace_running_instance(
+            None,
+            message=message,
+            recording_active=bool(existing and existing.recording_active),
+        ):
+            _killed, error = controller.lock.terminate_other_instances()
+            if error:
+                QMessageBox.critical(
+                    None,
+                    APP_DISPLAY_NAME,
+                    f"Could not close the old copy.\n{error}",
+                )
+                return 1
+            ok, message = controller.acquire_app_lock(force=True)
+        if not ok:
+            QMessageBox.warning(None, APP_DISPLAY_NAME, message)
+            return 1
 
     manager = WindowManager(controller)
     manager.start()

@@ -50,6 +50,7 @@ PREP_STEP_ESTIMATE_KEYS: dict[str, str | None] = {
 }
 
 DEROOM_PLACEHOLDER_EST_SEC = 30
+FAST_PREVIEW_ETA_DISPLAY = "Estimated time is 4 minutes"
 
 FAILURE_JSON_NAME = "harness-FAILURE.json"
 
@@ -248,15 +249,7 @@ def _format_remaining(seconds: float) -> str:
     return f"about {hours} hr remaining"
 
 
-def _estimate_breakdown(state: dict, *, fast: bool) -> dict | None:
-    if fast:
-        from app.controller.paths import ensure_scripts_path
-
-        ensure_scripts_path()
-        from piab_fast_preview_lib import estimate_fast_preview_prep
-
-        breakdown = estimate_fast_preview_prep().get("breakdown")
-        return breakdown if isinstance(breakdown, dict) else None
+def _estimate_breakdown(state: dict) -> dict | None:
     estimate = state.get("estimate_prep")
     if not isinstance(estimate, dict):
         return None
@@ -265,12 +258,14 @@ def _estimate_breakdown(state: dict, *, fast: bool) -> dict | None:
 
 
 def _step_estimate_sec(state: dict, step_id: str) -> int | None:
-    if step_id in {"07_deroom_placeholder", "07p_deroom_placeholder"}:
+    if step_id in FAST_PREVIEW_STEP_ORDER:
+        return None
+    if step_id == "07_deroom_placeholder":
         return DEROOM_PLACEHOLDER_EST_SEC
     key = PREP_STEP_ESTIMATE_KEYS.get(step_id)
     if not key:
         return None
-    breakdown = _estimate_breakdown(state, fast=step_id in FAST_PREVIEW_STEP_ORDER)
+    breakdown = _estimate_breakdown(state)
     if breakdown is None:
         return None
     value = breakdown.get(key)
@@ -315,10 +310,12 @@ def _step_timing_display(
         return None, None
 
     started = _step_started_at(state, step_id, fallback_started_at=fallback_started_at)
+    started_display = _format_local_time(started) if started is not None else None
+    if step_id in FAST_PREVIEW_STEP_ORDER:
+        return started_display, FAST_PREVIEW_ETA_DISPLAY
     if started is None:
         return None, None
 
-    started_display = _format_local_time(started)
     estimate_sec = _step_estimate_sec(state, step_id)
     if estimate_sec is None:
         return started_display, None

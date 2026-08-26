@@ -16,10 +16,12 @@ for _path in (_SCRIPTS, _REPO_ROOT):
 from piab_install_shortcuts import (
     APP_USER_MODEL_ID,
     create_shortcut,
+    current_user_shortcut_dirs,
     install_shortcuts,
     pythonw_path,
     read_shortcut_app_user_model_id,
     read_shortcut_info,
+    resolve_shortcut_dirs,
     shortcut_path,
     uninstall_shortcuts,
 )
@@ -69,3 +71,9 @@ class PiabInstallShortcutsTests(unittest.TestCase):
             )
             info = read_shortcut_info(dest)
             self.assertTrue(info["icon"].lower().startswith(str(APP_ICON_ICO).lower()))
+
+    def test_resolve_current_user_scope(self) -> None:
+        self.assertEqual(
+            resolve_shortcut_dirs(all_users=False),
+            current_user_shortcut_dirs(),
+        )

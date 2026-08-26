@@ -88,6 +88,15 @@ class PiabEnsureVmixTests(unittest.TestCase):
         mock_run.return_value.stdout = "vMix64.exe   123 Console"
         self.assertTrue(is_vmix_running())
 
+    @patch("piab_ensure_vmix.sys.platform", "win32")
+    def test_default_launch_uses_startfile(self) -> None:
+        from piab_ensure_vmix import _default_launch
+
+        exe = Path(r"C:\Program Files (x86)\vMix\vMix64.exe")
+        with patch("os.startfile") as startfile:
+            _default_launch(exe)
+        startfile.assert_called_once_with(str(exe))
+
 
 if __name__ == "__main__":
     unittest.main()

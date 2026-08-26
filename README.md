@@ -51,13 +51,15 @@ python -m app.main
 
 Or double-click `run_piab_app.bat` (keeps a console for errors).
 
-To add **Start Menu** and **Desktop** shortcuts (launches with `pythonw.exe`, no console, uses `assets/piab.ico`):
+To add **Start Menu** and **Desktop** shortcuts (quiet launch with `pythonw.exe`, no console, uses `assets/piab.ico`):
 
 ```powershell
 python scripts/piab_install_shortcuts.py
 ```
 
-Run that once after clone. Rebuild the icon with `python scripts/piab_build_app_icon.py` if the source PNG changes.
+That prefers **All Users** (Public Desktop + All Users Start Menu) when those folders are writable, so every account on the PC sees one **Podcast in a Box** icon. If Windows blocks those folders, it installs for the current account instead. Use `--all-users` (as Administrator) or `--current-user` to force a scope.
+
+Run that once after clone. Rebuild the icon with `python scripts/piab_build_app_icon.py` if the source PNG changes. `run_piab_app.bat` stays as the console debug launcher.
 
 ## Process log
 

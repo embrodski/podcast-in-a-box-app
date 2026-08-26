@@ -202,6 +202,28 @@ def open_vmix_preset(
         )
 
     print_fn(f"Opening vMix preset: {resolved.name}")
+    from piab_ensure_vmix import (
+        ensure_vmix_running,
+        find_vmix_executable,
+        launch_vmix,
+    )
+
+    started = ensure_vmix_running(print_fn=print_fn)
+    if not started.ok:
+        return VmixPresetResult(
+            status="failed",
+            preset_path=str(resolved),
+            message=started.message or "vMix could not be started.",
+        )
+
+    if not wait_for_vmix_api(
+        api_base=api_base,
+        timeout_sec=min(3.0, api_wait_sec),
+        fetch_xml=fetch_xml,
+    ):
+        executable = find_vmix_executable()
+        if executable is not None:
+            launch_vmix(executable)
     if not wait_for_vmix_api(
         api_base=api_base,
         timeout_sec=api_wait_sec,

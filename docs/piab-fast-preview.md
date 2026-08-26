@@ -108,7 +108,7 @@ Reuse existing steps:
 
 **Forced-offset preview prep:** When A/B runs, build forced-offset preview prepped media in the sandbox (same as today’s `ensure_forced_offset_prep`, scoped to preview paths). Do not create full-length forced prep yet.
 
-**Estimate:** Show **Estimate A-fast** on D4 (wall-clock for ~5 min sources, not full interview length).
+**Estimate:** D4 and E1 show a fixed Fast Preview time of **4 minutes** (no computed Estimate A-fast).
 
 ---
 
@@ -233,7 +233,7 @@ Preview prep may populate transient keys (`main_prepped`, etc.) under preview sc
 
 | Screen | Change |
 |--------|--------|
-| **D4** | If max video &gt; 10 min: show Estimate A-fast + explain Fast Preview; else existing Estimate A |
+| **D4** | Explain Fast Preview and show a fixed 4-minute estimate |
 | **E1** | Phase 1: “Fast preview processing…” → F2a or F2; Phase 2: “Full processing…” after approval |
 | **F2a / F2** | Resolve paths under `Preview Files/Output/`; F2 re-label link + copy |
 | **F3** | Skipped when Fast Preview approval auto-continues |
@@ -254,7 +254,7 @@ Preview prep may populate transient keys (`main_prepped`, etc.) under preview sc
 | `harness_video_sync.py` / `harness_av_sync_lib.py` | Optional `paths` override; preview-scoped forced prep |
 | `app/controller/` | Fast preview job, approval persistence, path resolvers |
 | `app/gui/views/` | D4, E1, F2, F2a updates |
-| `app/gui/views/review_screens.py` | F2 speaker-swap only + re-label link |
+| `app/gui/views/one_min_review_screen.py` | F2 speaker-swap only + re-label link |
 | `piab_resume.py` | Preview vs full resume plans |
 | `docs/piab-app-architecture.md` | Screen flow update |
 | `.cursor/skills/lighthaven-podcast-in-a-box/SKILL.md` | Agent parity |

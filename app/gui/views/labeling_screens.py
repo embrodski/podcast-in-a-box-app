@@ -22,19 +22,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.controller.prep_progress import FAST_PREVIEW_ETA_DISPLAY
 from app.gui.dialogs import confirm_action
 from app.gui.widgets.path_banner import PathBanner
 from app.gui.widgets.screen_base import ScreenWidget
 from app.gui.widgets.video_playback import close_media_player
 from app.gui.widgets.selectable_text import body_label, heading_label, selectable_plain_text
-from app.gui.widgets.worker import CallableWorker
-
-
-def _session_folder(screen: ScreenWidget) -> Path | None:
-    ctx = screen.context()
-    if ctx is None or ctx.session_folder is None:
-        return None
-    return ctx.session_folder
+from app.gui.widgets.worker import CallableWorker, start_callable_worker, stop_callable_worker
 
 
 def _audio_previews_need_refresh(previews: list) -> bool:
@@ -107,7 +101,7 @@ class LabelCamerasScreen(ScreenWidget):
         layout.addLayout(row)
 
     def on_enter(self) -> None:
-        folder = _session_folder(self)
+        folder = self.session_folder()
         if folder is None:
             self._status.setText("No session folder. Go back and create a session first.")
             return
@@ -116,13 +110,13 @@ class LabelCamerasScreen(ScreenWidget):
         self._clear_cards()
         self._continue.setEnabled(False)
 
-        if self._worker is not None and self._worker.isRunning():
-            return
-
-        self._worker = CallableWorker(self._load_previews, folder)
-        self._worker.finished_ok.connect(self._on_previews)
-        self._worker.failed.connect(self._on_fail)
-        self._worker.start()
+        start_callable_worker(
+            self,
+            self._load_previews,
+            folder,
+            on_ok=self._on_previews,
+            on_fail=self._on_fail,
+        )
 
     def _load_previews(self, folder: Path) -> dict:
         state = self.controller.load_session_state(folder)
@@ -276,7 +270,7 @@ class LabelMicrophonesScreen(ScreenWidget):
         layout.addLayout(row)
 
     def on_enter(self) -> None:
-        folder = _session_folder(self)
+        folder = self.session_folder()
         if folder is None:
             self._status.setText("No session folder.")
             return
@@ -284,13 +278,13 @@ class LabelMicrophonesScreen(ScreenWidget):
         self._status.setText("Extracting audio preview clips…")
         self._clear_rows()
 
-        if self._worker is not None and self._worker.isRunning():
-            return
-
-        self._worker = CallableWorker(self._load_previews, folder)
-        self._worker.finished_ok.connect(self._on_previews)
-        self._worker.failed.connect(lambda msg: self._status.setText(msg))
-        self._worker.start()
+        start_callable_worker(
+            self,
+            self._load_previews,
+            folder,
+            on_ok=self._on_previews,
+            on_fail=lambda msg: self._status.setText(msg),
+        )
 
     def on_leave(self) -> None:
         close_media_player(self._player)
@@ -452,7 +446,7 @@ class ApplyLabelsScreen(ScreenWidget):
 
     def on_enter(self) -> None:
         ctx = self.context()
-        folder = _session_folder(self)
+        folder = self.session_folder()
         if ctx is None or folder is None:
             self._detail.setText("Missing session or label data.")
             return
@@ -469,14 +463,15 @@ class ApplyLabelsScreen(ScreenWidget):
         self._retry.hide()
         self._cancel.clear()
 
-        if self._worker is not None and self._worker.isRunning():
-            return
-
-        self._worker = CallableWorker(self._apply, ctx, folder)
-        self._worker.progress.connect(self._on_copy_progress)
-        self._worker.finished_ok.connect(lambda _r: self.navigate.emit("D4"))
-        self._worker.failed.connect(self._on_fail)
-        self._worker.start()
+        start_callable_worker(
+            self,
+            self._apply,
+            ctx,
+            folder,
+            on_ok=lambda _r: self.navigate.emit("D4"),
+            on_fail=self._on_fail,
+            on_progress=self._on_copy_progress,
+        )
 
     def _append_log(self, line: str) -> None:
         self._log_lines.append(line)
@@ -534,16 +529,7 @@ class ApplyLabelsScreen(ScreenWidget):
     def cancel_apply_and_record(self) -> None:
         """Stop the in-flight copy, persist progress, and wait for the worker."""
         self._cancel.set()
-        worker = self._worker
-        if worker is None:
-            return
-        for signal in (worker.finished_ok, worker.failed, worker.progress):
-            try:
-                signal.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-        if worker.isRunning():
-            worker.wait(60_000)
+        stop_callable_worker(self._worker, wait_ms=60_000)
 
     def _restore_labels_from_state(self, ctx, folder: Path) -> None:
         try:
@@ -610,7 +596,7 @@ class EstimatePrepScreen(ScreenWidget):
         layout.addLayout(row)
 
     def on_enter(self) -> None:
-        folder = _session_folder(self)
+        folder = self.session_folder()
         if folder is None:
             self._summary.setText("No session folder.")
             self._banner.set_path(None)
@@ -624,29 +610,16 @@ class EstimatePrepScreen(ScreenWidget):
             return
 
         eta = state.get("estimate_prep") or {}
-        from app.controller.paths import ensure_scripts_path
-
-        ensure_scripts_path()
-        from piab_fast_preview_lib import estimate_fast_preview_prep
-
-        eta_fast = estimate_fast_preview_prep()
-        if not eta and not eta_fast:
-            self._summary.setText(
-                "Prep estimate is not available yet. Go back and apply labels first."
-            )
-            return
-
         source_human = str(
             (eta.get("breakdown") or {}).get("source_duration_human") or "?"
         )
-        fast_summary = str(eta_fast.get("summary") or "a few minutes")
         lines = [
             "Labeling is complete. Files are in the session Raw folder.",
             "",
             f"Source recording length: {source_human}",
             "",
             "Next: Fast Preview (a short 1-minute review from preview clips).",
-            f"Estimated Fast Preview time: {fast_summary}",
+            FAST_PREVIEW_ETA_DISPLAY + ".",
             "",
             "Full-length files are not created until you approve the preview.",
         ]

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import subprocess
 import sys
 import tempfile
-import threading
-import json
 from pathlib import Path
 
 from app.controller.abort_session import record_session_abort
@@ -45,15 +45,12 @@ from app.controller.labeling import (
     validate_audio_labels,
     validate_video_labels,
 )
-from app.controller.recording import RecordingPhrases, get_recording_phrases, recording_instructions
+from app.controller.recording import recording_instructions
 from app.controller.session_setup import scan_session_folder, validate_delivery_email
 from app.controller.review import (
     approve_one_min_test,
     fix_audio_speaker_swap,
-    rerun_one_min_test,
     resolve_one_min_test_path,
-    swap_labeled_files,
-    swap_speaker_ids_toggle,
 )
 from app.controller.sync_offset import (
     needs_sync_offset_choice,
@@ -95,7 +92,6 @@ class PiabController:
         queue_path = self.work_root / JOB_QUEUE_FILENAME
         self.job_queue = job_queue or JobQueueStore(queue_path)
         self._recording_job_id: str | None = None
-        self._recording_continue = threading.Event()
 
     def acquire_app_lock(self, *, force: bool = False) -> tuple[bool, str]:
         return self.lock.acquire(force=force)
@@ -205,9 +201,6 @@ class PiabController:
             if job.status == "running" and job.session_folder is not None:
                 folders.add(job.session_folder.resolve())
         return folders
-
-    def get_recording_phrases(self) -> RecordingPhrases:
-        return get_recording_phrases()
 
     def recording_instructions(self) -> str:
         return recording_instructions()
@@ -352,20 +345,6 @@ class PiabController:
     ) -> dict:
         return fix_audio_speaker_swap(working_folder, allow_overwrite=allow_overwrite)
 
-    def swap_speaker_ids_toggle(self, working_folder: Path) -> dict:
-        return swap_speaker_ids_toggle(working_folder)
-
-    def swap_labeled_files(self, working_folder: Path, *, kind: str) -> dict:
-        return swap_labeled_files(working_folder, kind=kind)
-
-    def rerun_one_min_test(
-        self,
-        working_folder: Path,
-        *,
-        allow_overwrite: bool = False,
-    ) -> dict:
-        return rerun_one_min_test(working_folder, allow_overwrite=allow_overwrite)
-
     def read_failure_info(
         self,
         working_folder: Path | None,
@@ -404,25 +383,25 @@ class PiabController:
 
         return open_vmix_preset()
 
-    def confirm_camera_setup_step(self, continue_event: threading.Event):
+    def probe_multicorder(self, *, timeout_sec: float = 10.0):
         ensure_scripts_path()
-        from piab_confirm_camera_setup import confirm_camera_setup
+        from piab_vmix_api import probe_multicorder
 
-        return confirm_camera_setup(
-            use_continue_button_flag=True,
-            continue_event=continue_event,
-            open_fn=lambda _path: None,
-            print_fn=lambda _msg: None,
-        )
+        return probe_multicorder(timeout_sec=timeout_sec)
 
     def multicorder_is_active(self) -> bool:
-        ensure_scripts_path()
-        from piab_vmix_api import is_multicorder_active
+        probe = self.probe_multicorder()
+        if probe.status == "unreachable":
+            raise RuntimeError(
+                probe.message or "Could not read vMix MultiCorder state."
+            )
+        return probe.is_recording
 
-        try:
-            return is_multicorder_active()
-        except Exception:
-            return False
+    def recording_lost_message(self, *, timeout_sec: float = 1.5) -> str | None:
+        ensure_scripts_path()
+        from piab_vmix_api import recording_lost_message
+
+        return recording_lost_message(self.probe_multicorder(timeout_sec=timeout_sec))
 
     def warmup_cameras_for_recording(self) -> dict:
         """Preview-cycle DeckLink cameras so HDMI audio can lock before MultiCorder."""
@@ -452,7 +431,12 @@ class PiabController:
         if not ok:
             raise RuntimeError(message)
 
-        if self.multicorder_is_active() and already_recording_action is None:
+        probe = self.probe_multicorder()
+        if probe.status == "unreachable":
+            raise RuntimeError(
+                probe.message or "Could not read vMix MultiCorder state."
+            )
+        if probe.is_recording and already_recording_action is None:
             raise RuntimeError(
                 "MultiCorder is already recording. Choose to continue or restart."
             )
@@ -465,7 +449,6 @@ class PiabController:
 
         job = self.jobs.register_job("recording", abort_hook=_abort_recording)
         self._recording_job_id = job.id
-        self._recording_continue.clear()
         self.lock.set_recording_active(True)
 
         try:
@@ -477,6 +460,16 @@ class PiabController:
                 ),
                 print_fn=lambda _msg: None,
             )
+            confirm = self.probe_multicorder()
+            if confirm.status != "recording":
+                if confirm.status == "unreachable":
+                    raise RuntimeError(
+                        (confirm.message or "Could not confirm that vMix MultiCorder is recording.")
+                        + " Check vMix before continuing."
+                    )
+                raise RuntimeError(
+                    "vMix MultiCorder did not start recording."
+                )
         except Exception as exc:
             self._recording_job_id = None
             self.lock.set_recording_active(False)
@@ -510,10 +503,6 @@ class PiabController:
             self.lock.set_recording_active(False)
 
         return job
-
-    def signal_recording_continue(self) -> None:
-        """GUI Continue button during recording wait (future hook)."""
-        self._recording_continue.set()
 
     def init_session(
         self,
@@ -733,8 +722,12 @@ class PiabController:
                             job.session_folder,
                             message=result.message or "Aborted by user.",
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logging.getLogger("piab").warning(
+                            "Could not record session abort for %s: %s",
+                            job.session_folder,
+                            exc,
+                        )
                 lane = self._lane_for_kind(job.kind)
                 if lane is not None:
                     if advance_queue:
@@ -776,8 +769,12 @@ class PiabController:
                     folder,
                     message="Cancelled from queue before the job started.",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger("piab").warning(
+                    "Could not record session abort for %s: %s",
+                    folder,
+                    exc,
+                )
             self.start_next_queued(lane)
         return cancelled
 

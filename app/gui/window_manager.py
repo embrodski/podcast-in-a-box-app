@@ -10,10 +10,9 @@ from PySide6.QtWidgets import QApplication, QWidget
 from app.controller import PiabController
 from app.gui.interrupt_dialog import prompt_interrupted_job
 from app.gui.main_window import MainWindow
+from app.gui.screens import HOME_SCREENS
 from app.gui.session_context import SessionContext
 
-HOME_SCREENS = frozenset({"A0", "A1", "A2", "A4"})
-FINAL_SCREENS = frozenset({"F4", "F5"})
 CASCADE_STEP_PX = 40
 
 
@@ -250,12 +249,13 @@ class WindowManager:
             return
         if window is self.home:
             self.home = None
-            return
-        if window in self.flows:
+        elif window in self.flows:
             self.flows.remove(window)
         keys = [key for key, value in self.finals.items() if value is window]
         for key in keys:
             self.finals.pop(key, None)
+        if self.home is None and not self.flows and not self.finals:
+            self.quit_program()
 
     def quit_program(self) -> None:
         self._quitting = True

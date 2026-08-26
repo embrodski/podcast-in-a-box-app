@@ -16,6 +16,33 @@ REMOVE_FROM_QUEUE_TEXT = (
 )
 
 
+def prompt_replace_running_instance(
+    parent: QWidget | None,
+    *,
+    message: str,
+    recording_active: bool = False,
+) -> bool:
+    """Return True if the user chose to kill the existing copy and start."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle("Podcast in a Box is already running")
+    box.setText(message)
+    detail = (
+        "Close the existing window, or kill the old copy so this one can start."
+    )
+    if recording_active:
+        detail += (
+            "\n\nA recording may still be in progress. Killing the app does not "
+            "stop vMix MultiCorder by itself."
+        )
+    box.setInformativeText(detail)
+    cancel = box.addButton("Cancel", QMessageBox.RejectRole)
+    kill = box.addButton("Close old copy and start", QMessageBox.DestructiveRole)
+    box.setDefaultButton(cancel)
+    box.exec()
+    return box.clickedButton() == kill
+
+
 def confirm_close_while_busy(parent: QWidget, reasons: list[str]) -> bool:
     """Return True if the user chose to abort and quit."""
     reason_text = ", ".join(reasons)

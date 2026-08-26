@@ -39,6 +39,56 @@ def default_start_menu_dir() -> Path:
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
 
 
+def default_all_users_desktop_dir() -> Path:
+    public = os.environ.get("PUBLIC") or r"C:\Users\Public"
+    return Path(public) / "Desktop"
+
+
+def default_all_users_start_menu_dir() -> Path:
+    programdata = os.environ.get("PROGRAMDATA") or r"C:\ProgramData"
+    return Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+
+def current_user_shortcut_dirs() -> tuple[Path, Path]:
+    return default_desktop_dir(), default_start_menu_dir()
+
+
+def all_users_shortcut_dirs() -> tuple[Path, Path]:
+    return default_all_users_desktop_dir(), default_all_users_start_menu_dir()
+
+
+def known_shortcut_dirs() -> tuple[Path, ...]:
+    return current_user_shortcut_dirs() + all_users_shortcut_dirs()
+
+
+def can_write_dir(folder: Path) -> bool:
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe = folder / ".piab-write-probe"
+        probe.write_bytes(b"")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def resolve_shortcut_dirs(*, all_users: bool | None = None) -> tuple[Path, Path]:
+    """Prefer All Users folders when writable so one icon appears for every account.
+
+    Installing *both* current-user and All Users copies would duplicate the icon
+    on this account's Desktop and Start Menu.
+    """
+    everyone = all_users_shortcut_dirs()
+    current = current_user_shortcut_dirs()
+    if all_users is True:
+        return everyone
+    if all_users is False:
+        return current
+    if can_write_dir(everyone[0]) and can_write_dir(everyone[1]):
+        return everyone
+    return current
+
+
 def pythonw_path(executable: Path | None = None) -> Path:
     exe = Path(executable or sys.executable)
     candidate = exe.with_name("pythonw.exe")
@@ -135,22 +185,17 @@ def read_shortcut_info(dest: Path) -> dict[str, str]:
     }
 
 
-def install_shortcuts(
+def _write_shortcuts(
+    folders: tuple[Path, Path] | list[Path],
     *,
-    desktop_dir: Path | None = None,
-    start_menu_dir: Path | None = None,
-    pythonw: Path | None = None,
-    repo_root: Path = APP_REPO_ROOT,
-    icon: Path = APP_ICON_ICO,
-    app_id: str = APP_USER_MODEL_ID,
+    pythonw: Path | None,
+    repo_root: Path,
+    icon: Path,
+    app_id: str,
 ) -> list[Path]:
-    if sys.platform != "win32":
-        raise RuntimeError("PIAB shortcuts are Windows-only.")
-    if not icon.is_file():
-        raise FileNotFoundError(f"App icon not found: {icon}")
     launcher = pythonw_path(pythonw)
     written: list[Path] = []
-    for folder in (desktop_dir or default_desktop_dir(), start_menu_dir or default_start_menu_dir()):
+    for folder in folders:
         dest = shortcut_path(folder)
         create_shortcut(
             dest,
@@ -164,13 +209,50 @@ def install_shortcuts(
     return written
 
 
+def install_shortcuts(
+    *,
+    desktop_dir: Path | None = None,
+    start_menu_dir: Path | None = None,
+    pythonw: Path | None = None,
+    repo_root: Path = APP_REPO_ROOT,
+    icon: Path = APP_ICON_ICO,
+    app_id: str = APP_USER_MODEL_ID,
+    all_users: bool | None = None,
+) -> list[Path]:
+    if sys.platform != "win32":
+        raise RuntimeError("PIAB shortcuts are Windows-only.")
+    if not icon.is_file():
+        raise FileNotFoundError(f"App icon not found: {icon}")
+    if desktop_dir is not None or start_menu_dir is not None:
+        folders = (
+            desktop_dir or default_desktop_dir(),
+            start_menu_dir or default_start_menu_dir(),
+        )
+    else:
+        folders = resolve_shortcut_dirs(all_users=all_users)
+    return _write_shortcuts(
+        folders,
+        pythonw=pythonw,
+        repo_root=repo_root,
+        icon=icon,
+        app_id=app_id,
+    )
+
+
 def uninstall_shortcuts(
     *,
     desktop_dir: Path | None = None,
     start_menu_dir: Path | None = None,
 ) -> list[Path]:
+    if desktop_dir is not None or start_menu_dir is not None:
+        folders: tuple[Path, ...] = (
+            desktop_dir or default_desktop_dir(),
+            start_menu_dir or default_start_menu_dir(),
+        )
+    else:
+        folders = known_shortcut_dirs()
     removed: list[Path] = []
-    for folder in (desktop_dir or default_desktop_dir(), start_menu_dir or default_start_menu_dir()):
+    for folder in folders:
         dest = shortcut_path(folder)
         if dest.is_file():
             dest.unlink()
@@ -185,6 +267,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Remove the Desktop and Start Menu shortcuts.",
     )
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--all-users",
+        action="store_true",
+        help="Install to Public Desktop and All Users Start Menu (needs admin).",
+    )
+    scope.add_argument(
+        "--current-user",
+        action="store_true",
+        help="Install only for the signed-in Windows account.",
+    )
     args = parser.parse_args(argv)
     if args.uninstall:
         removed = uninstall_shortcuts()
@@ -194,11 +287,28 @@ def main(argv: list[str] | None = None) -> int:
         for path in removed:
             print(f"removed: {path}")
         return 0
-    written = install_shortcuts()
+    all_users: bool | None
+    if args.all_users:
+        all_users = True
+    elif args.current_user:
+        all_users = False
+    else:
+        all_users = None
+    written = install_shortcuts(all_users=all_users)
     for path in written:
         print(f"installed: {path}")
     print(f"launcher: {pythonw_path()}")
     print(f"icon: {APP_ICON_ICO}")
+    everyone = all_users_shortcut_dirs()
+    if written and written[0].parent == everyone[0]:
+        print("scope: all users (Public Desktop + All Users Start Menu)")
+    else:
+        print("scope: current user only")
+        if all_users is not False:
+            print(
+                "All Users folders were not writable. Re-run as Administrator "
+                "with --all-users to add the icon for every account."
+            )
     print("run_piab_app.bat is unchanged (console debug launcher).")
     return 0
 

@@ -168,7 +168,7 @@ Only when user chooses **Record now**. Uses `PIAB_USE_CONTINUE_BUTTON=1` + `cont
 |-----------|-------|---------|
 | **B1** | vMix | `piab_ensure_vmix.py` |
 | **B2** | vMix preset | `piab_open_vmix_preset.py` |
-| **B3** | Camera & mic setup | `confirm_camera_setup(continue_event=…)` |
+| **B3** | Camera setup / Microphone setup | `confirm_camera_setup(continue_event=…)` |
 | **B4** | Recording | `run_multicorder_session(continue_event=…)` — **Abort** available |
 | **B5** | Recording complete | **Continue to autocut** / **Stop — save files only** |
 | **B6** | Files saved (no autocut) | Files in `E:\PodcastRoom`; no session subfolder |
@@ -194,7 +194,7 @@ If special folder already contains `podcast-in-a-box.json`, treat as **Resume** 
 | **D1** | Label cameras | `03_label_videos` |
 | **D2** | Label microphones | `04_label_audio` |
 | **D3** | Apply labels | → `05_estimate_prep` |
-| **D4** | Estimate A | `05_estimate_prep` |
+| **D4** | Ready to process (fixed 4-minute Fast Preview estimate) | `05_estimate_prep` |
 
 ### Tier E — Processing (background)
 
@@ -223,15 +223,14 @@ Poll `podcast-in-a-box.json` (`steps`, `resume_at`) and `Temp/harness-FAILURE.js
 On any autocut step failure (prep, Fast Preview, or full render): an application-modal popup says the autocut failed and a bug report was submitted, and that original files are safe. `notify_harness_failure` also emails **lighthavenpodcastroom@gmail.com** with subject **PIAB autocut error** and that session’s process-log row plus `Temp/harness-FAILURE.txt`. User abort and overwrite-blocked (files already exist) do not send a bug report.
 | **F2a** | Sync offset A/B choice | `10a_sync_offset_approval` — side-by-side players |
 | **F2** | Review 1-minute test | `11_one_min_approval` |
-| **F3** | Estimate B | `12_estimate_full` |
-| **F4** | Rendering full interview… | `13_full_render` — **Abort** available. If waiting in queue: **Hold Outside Queue**. |
+| **F4** | Rendering full interview… | `12_estimate_full`, `13_full_render` — **Abort** available. If waiting in queue: **Hold Outside Queue**. |
 | **F5** | Done | `14_done` |
 
 **F2 actions:**
 
 | Button | Backend |
 |--------|---------|
-| Looks good | → **F3** |
+| Looks good | queue full job → **F4** |
 | Host/Guest audio or cameras swapped in edit | `piab_fix_audio_speaker_swap.py --allow-overwrite` (GUI: **Host/Guest swapped in edit**) |
 | Wrong Raw Host/Guest files (mislabeled during labeling) | `piab_swap.py --files …` → **D1** / **D2** |
 
@@ -268,7 +267,7 @@ A session is resumable only when `podcast-in-a-box.json` has `kind=podcast_in_a_
 | `05_estimate_prep` | **D4** |
 | `06_conversation_sync` … `10_one_min_test` | **E1** (offer prep `--resume`) |
 | `11_one_min_approval` | **F2** |
-| `12_estimate_full` | **F3** |
+| `12_estimate_full` | **F4** |
 | `13_full_render` | **F4** |
 | `14_done` | **F5** |
 
@@ -278,7 +277,7 @@ A session is resumable only when `podcast-in-a-box.json` has `kind=podcast_in_a_
 
 ### Walk-in: record + autocut + email
 
-`A0 → A1 → A3(record) → C1(email) → B1…B4 → B5(continue) → C4 → D1 → D2 → D4 → E1 → F2 → F3 → F4 → F5`
+`A0 → A1 → A3(record) → C1(email) → B1…B4 → B5(continue) → C4 → D1 → D2 → D4 → E1 → F2 → F4 → F5`
 
 ### Walk-in: record only (memory stick later)
 
@@ -447,7 +446,7 @@ class PiabController:
 3. **PySide6 shell** — A0, A1, close protection, modals
 4. **Recording screens** — B1–B6
 5. **Autocut screens** — C*, D*, E*, F*
-6. **Packaging** — Desktop / Start Menu shortcuts via `scripts/piab_install_shortcuts.py` (done). PyInstaller exe (later)
+6. **Packaging** — Desktop / Start Menu shortcuts via `scripts/piab_install_shortcuts.py` (All Users when writable, else current user). PyInstaller exe (later)
 
 ---
 

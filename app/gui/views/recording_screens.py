@@ -7,20 +7,34 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from app.controller.paths import ASSETS_DIR, DEFAULT_SCAN_ROOT
 from app.gui.dialogs import confirm_action
+from app.gui.recording_alarm import (
+    RECORDING_ALARM_URGENT_MS,
+    RECORDING_STOPPED_TEXT,
+    alarm_flash_stylesheet,
+    alarm_label_style,
+    bring_window_to_front,
+    ping_alarm_beep,
+    raise_app_window,
+    release_alarm_window,
+    start_alarm_sound,
+    stop_alarm_sound,
+)
 from app.gui.widgets.screen_base import ScreenWidget
 from app.gui.widgets.selectable_text import body_label, heading_label
-from app.gui.widgets.worker import CallableWorker
+from app.gui.widgets.worker import CallableWorker, start_callable_worker
 
 
 class _StatusScreen(ScreenWidget):
@@ -96,12 +110,12 @@ class _StatusScreen(ScreenWidget):
         self._retry.setEnabled(True)
 
     def _run(self, fn, *, on_ok) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            return
-        self._worker = CallableWorker(fn)
-        self._worker.finished_ok.connect(on_ok)
-        self._worker.failed.connect(self._set_error)
-        self._worker.start()
+        start_callable_worker(
+            self,
+            fn,
+            on_ok=on_ok,
+            on_fail=self._set_error,
+        )
 
 
 class VmixEnsureScreen(_StatusScreen):
@@ -167,7 +181,27 @@ class VmixPresetScreen(_StatusScreen):
             return
         label = result.preset_path or result.message or "Preset loaded."
         self._detail.setText(label)
+        raise_app_window(self)
         self._advance_after_ok("B3")
+
+
+def _scaled_asset_label(
+    filename: str,
+    *,
+    width: int,
+    height: int,
+    alignment: Qt.AlignmentFlag = Qt.AlignCenter,
+) -> QLabel:
+    img = QLabel()
+    img.setAlignment(alignment)
+    img.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+    path = ASSETS_DIR / filename
+    if path.is_file():
+        pix = QPixmap(str(path))
+        img.setPixmap(pix.scaled(width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    else:
+        img.setText(f"Missing {filename}")
+    return img
 
 
 class CameraSetupScreen(ScreenWidget):
@@ -177,18 +211,27 @@ class CameraSetupScreen(ScreenWidget):
         super().__init__(controller, parent)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(heading_label("Camera and microphone setup"))
-        instructions = body_label(
-            "Position cameras and turn microphone levels up to about 80%. "
-            "Speakers should be slightly off-center, looking toward the middle of frame, "
-            "with eyes near the top guide line in the viewfinder."
-        )
-        layout.addWidget(instructions)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        inner = QWidget()
-        images_row = QHBoxLayout(inner)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
+
+        content_layout.addWidget(heading_label("Camera setup"))
+        content_layout.addWidget(
+            body_label(
+                "Position cameras so speakers are slightly off-center, looking toward "
+                "the middle of frame, with eyes near the top guide line in the viewfinder."
+            )
+        )
+
+        images_row = QHBoxLayout()
+        images_row.setContentsMargins(0, 0, 0, 0)
+        images_row.setSpacing(12)
+        images_row.setAlignment(Qt.AlignTop)
         self._image_labels: list[QLabel] = []
         for name, filename in (
             ("Left", "piab-camera-left.jpg"),
@@ -196,23 +239,40 @@ class CameraSetupScreen(ScreenWidget):
             ("Wide", "piab-camera-wide.jpg"),
         ):
             col = QVBoxLayout()
-            col.addWidget(QLabel(name), alignment=Qt.AlignCenter)
-            img = QLabel()
-            img.setAlignment(Qt.AlignCenter)
-            path = ASSETS_DIR / filename
-            if path.is_file():
-                pix = QPixmap(str(path))
-                img.setPixmap(
-                    pix.scaled(200, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                )
-            else:
-                img.setText(f"Missing {filename}")
+            caption = QLabel(name)
+            caption.setStyleSheet("font-size: 18px; font-weight: 700;")
+            caption.ensurePolished()
+            blank_line = caption.fontMetrics().lineSpacing()
+            col.setContentsMargins(0, blank_line, 0, 0)
+            col.setSpacing(blank_line)
+            caption.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+            caption.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            caption.setFixedHeight(max(1, caption.fontMetrics().height()))
+            col.addWidget(caption)
+            img = _scaled_asset_label(filename, width=200, height=150)
             col.addWidget(img)
             wrap = QWidget()
+            wrap.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
             wrap.setLayout(col)
-            images_row.addWidget(wrap)
+            images_row.addWidget(wrap, alignment=Qt.AlignTop)
             self._image_labels.append(img)
-        scroll.setWidget(inner)
+        cameras = QWidget()
+        cameras.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        cameras.setLayout(images_row)
+        content_layout.addWidget(cameras)
+
+        content_layout.addWidget(heading_label("Microphone setup"))
+        content_layout.addWidget(
+            body_label(
+                "Make sure any microphones in use are set at 80%-100% volume"
+            )
+        )
+        content_layout.addWidget(
+            _scaled_asset_label("volume-control.jpg", width=560, height=360)
+        )
+        content_layout.addStretch()
+
+        scroll.setWidget(content)
         layout.addWidget(scroll, stretch=1)
 
         row = QHBoxLayout()
@@ -226,9 +286,36 @@ class CameraSetupScreen(ScreenWidget):
         cont.clicked.connect(lambda: self.navigate.emit("B4"))
         row.addWidget(cont)
         layout.addLayout(row)
+        self._enter_token = 0
+
+    def on_enter(self) -> None:
+        self._enter_token += 1
+        token = self._enter_token
+        raise_app_window(self)
+        # vMix often reclaims focus after the preset finishes loading.
+        for delay_ms in (500, 1500, 3000):
+            QTimer.singleShot(
+                delay_ms,
+                lambda t=token: self._raise_over_vmix_if(t),
+            )
+
+    def on_leave(self) -> None:
+        self._enter_token += 1
+
+    def _raise_over_vmix_if(self, token: int) -> None:
+        if token != self._enter_token or not self.isVisible():
+            return
+        raise_app_window(self)
 
     def _go_back(self) -> None:
         self.navigate.emit("C1")
+
+
+_RECORDING_OK_STYLE = "color: #4ade80; font-size: 18px; font-weight: 600;"
+_RECORDING_BAD_STYLE = "color: #f87171; font-size: 22px; font-weight: 700;"
+_HEARTBEAT_MS = 2000
+_ALARM_BLINK_MS = 100
+_ALARM_BEEP_MS = 500
 
 
 class RecordingScreen(ScreenWidget):
@@ -238,7 +325,23 @@ class RecordingScreen(ScreenWidget):
         super().__init__(controller, parent)
         self._worker: CallableWorker | None = None
         self._recording_started = False
+        self._recording_confirmed = False
+        self._lost_alert_shown = False
+        self._alarm_flash_on = False
         self._enter_token = 0
+        self._heartbeat = QTimer(self)
+        self._heartbeat.setInterval(_HEARTBEAT_MS)
+        self._heartbeat.timeout.connect(self._on_heartbeat)
+        self._alarm_blink = QTimer(self)
+        self._alarm_blink.setInterval(_ALARM_BLINK_MS)
+        self._alarm_blink.timeout.connect(self._on_alarm_blink)
+        self._alarm_beep = QTimer(self)
+        self._alarm_beep.setInterval(_ALARM_BEEP_MS)
+        self._alarm_beep.timeout.connect(ping_alarm_beep)
+        self._alarm_urgent = QTimer(self)
+        self._alarm_urgent.setSingleShot(True)
+        self._alarm_urgent.setInterval(RECORDING_ALARM_URGENT_MS)
+        self._alarm_urgent.timeout.connect(self._end_urgent_alarm)
 
         layout = QVBoxLayout(self)
 
@@ -262,6 +365,7 @@ class RecordingScreen(ScreenWidget):
         heading = heading_label("Recording")
         heading.setAlignment(Qt.AlignCenter)
         rec.addWidget(heading)
+        self._heading = heading
         self._instructions = body_label("")
         self._instructions.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._instructions.setTextFormat(Qt.TextFormat.RichText)
@@ -269,7 +373,25 @@ class RecordingScreen(ScreenWidget):
 
         self._status = body_label("")
         self._status.setAlignment(Qt.AlignCenter)
+        self._status.setWordWrap(True)
         rec.addWidget(self._status)
+
+        self._alarm_overlay = QWidget()
+        self._alarm_overlay.hide()
+        alarm_layout = QVBoxLayout(self._alarm_overlay)
+        alarm_layout.setContentsMargins(8, 8, 8, 8)
+        alarm_layout.addStretch()
+        self._alarm_label = QLabel(RECORDING_STOPPED_TEXT)
+        self._alarm_label.setAlignment(Qt.AlignCenter)
+        self._alarm_label.setWordWrap(True)
+        self._alarm_label.setStyleSheet(alarm_label_style())
+        alarm_layout.addWidget(self._alarm_label)
+        self._alarm_detail = body_label("")
+        self._alarm_detail.setAlignment(Qt.AlignCenter)
+        self._alarm_detail.setStyleSheet("color: #fee2e2; font-size: 18px; font-weight: 600;")
+        alarm_layout.addWidget(self._alarm_detail)
+        alarm_layout.addStretch()
+        rec.addWidget(self._alarm_overlay, stretch=1)
 
         rec.addStretch()
 
@@ -297,14 +419,18 @@ class RecordingScreen(ScreenWidget):
     def on_enter(self) -> None:
         self._enter_token += 1
         token = self._enter_token
+        self._stop_heartbeat()
+        self._stop_lost_alarm()
         self._recording_started = False
+        self._recording_confirmed = False
         self._stop.setEnabled(False)
+        self._set_status("", error=False)
         self._show_warmup()
         try:
             self._instructions.setText(self.controller.recording_instructions())
         except Exception as exc:
             self._show_recording()
-            self._status.setText(str(exc))
+            self._set_status(str(exc), error=True)
             return
 
         from app.controller.storage_gate import assess_recording_storage
@@ -323,7 +449,14 @@ class RecordingScreen(ScreenWidget):
             self.navigate.emit("B3")
             return
 
-        if self.controller.multicorder_is_active():
+        probe = self.controller.probe_multicorder()
+        if probe.status == "unreachable":
+            self._show_recording()
+            message = probe.message or "Could not read vMix MultiCorder state."
+            self._set_status(message, error=True)
+            QMessageBox.warning(self, "Cannot confirm vMix recording", message)
+            return
+        if probe.is_recording:
             self._show_recording()
             already_action = self._ask_already_recording()
             if already_action is None:
@@ -332,10 +465,34 @@ class RecordingScreen(ScreenWidget):
             self._start_multicorder(already_action)
             return
 
-        self._worker = CallableWorker(self.controller.warmup_cameras_for_recording)
-        self._worker.finished_ok.connect(lambda _result: self._after_warmup(token))
-        self._worker.failed.connect(lambda _message: self._after_warmup(token))
-        self._worker.start()
+        start_callable_worker(
+            self,
+            self.controller.warmup_cameras_for_recording,
+            on_ok=lambda _result: self._after_warmup(token),
+            on_fail=self._on_warmup_failed,
+        )
+
+    def on_leave(self) -> None:
+        self._enter_token += 1
+        self._stop_heartbeat()
+        self._stop_lost_alarm()
+
+    def _set_status(self, message: str, *, error: bool) -> None:
+        self._status.setText(message)
+        self._status.setStyleSheet(_RECORDING_BAD_STYLE if error else _RECORDING_OK_STYLE)
+
+    def _start_heartbeat(self) -> None:
+        self._heartbeat.start()
+
+    def _stop_heartbeat(self) -> None:
+        self._heartbeat.stop()
+
+    def _on_warmup_failed(self, message: str) -> None:
+        if not self.isVisible():
+            return
+        self._show_recording()
+        self._set_status(message, error=True)
+        QMessageBox.warning(self, "Camera warmup failed", message)
 
     def _ask_already_recording(self) -> str | None:
         box = QMessageBox(self)
@@ -365,23 +522,95 @@ class RecordingScreen(ScreenWidget):
         self._start_multicorder(None)
 
     def _start_multicorder(self, already_recording_action: str | None) -> None:
-        self._status.setText("Starting MultiCorder…")
-        self._worker = CallableWorker(
+        self._set_status("Starting MultiCorder…", error=False)
+        start_callable_worker(
+            self,
             self.controller.begin_recording,
             already_recording_action=already_recording_action,
+            on_ok=self._on_started,
+            on_fail=self._on_start_failed,
         )
-        self._worker.finished_ok.connect(self._on_started)
-        self._worker.failed.connect(self._on_start_failed)
-        self._worker.start()
 
     def _on_started(self, _job) -> None:
+        if not self.isVisible():
+            return
         self._recording_started = True
-        self._status.setText("Recording is in progress.")
+        self._recording_confirmed = True
+        self._stop_lost_alarm()
+        self._set_status("Recording is in progress.", error=False)
         self._stop.setEnabled(True)
+        self._start_heartbeat()
 
     def _on_start_failed(self, message: str) -> None:
-        self._status.setText(message)
+        if not self.isVisible():
+            return
+        self._stop_heartbeat()
+        self._recording_confirmed = False
+        self._stop_lost_alarm()
+        self._set_status(message, error=True)
         QMessageBox.warning(self, "Could not start recording", message)
+
+    def _on_heartbeat(self) -> None:
+        if not self._recording_confirmed or not self.isVisible():
+            return
+        lost = self.controller.recording_lost_message(timeout_sec=1.5)
+        if lost is None:
+            if self._lost_alert_shown:
+                self._stop_lost_alarm()
+                self._set_status("Recording is in progress.", error=False)
+            return
+        self._start_lost_alarm(lost)
+
+    def _start_lost_alarm(self, detail: str) -> None:
+        already = self._lost_alert_shown
+        self._lost_alert_shown = True
+        self._heading.hide()
+        self._instructions.hide()
+        self._status.hide()
+        self._alarm_overlay.show()
+        self._alarm_detail.setText(detail)
+        self._alarm_overlay.setStyleSheet(alarm_flash_stylesheet(on=True))
+        self._alarm_label.setVisible(True)
+        if already:
+            return
+        start_alarm_sound()
+        ping_alarm_beep()
+        self._alarm_flash_on = True
+        bring_window_to_front(self)
+        self._alarm_blink.start()
+        self._alarm_beep.start()
+        self._alarm_urgent.start()
+
+    def _end_urgent_alarm(self) -> None:
+        """After 2s: keep flashing, but stop sound and always-on-top."""
+        if not self._lost_alert_shown:
+            return
+        self._alarm_beep.stop()
+        stop_alarm_sound()
+        release_alarm_window(self)
+
+    def _stop_lost_alarm(self) -> None:
+        was_alarming = self._lost_alert_shown
+        self._lost_alert_shown = False
+        self._alarm_blink.stop()
+        self._alarm_beep.stop()
+        self._alarm_urgent.stop()
+        stop_alarm_sound()
+        if was_alarming:
+            release_alarm_window(self)
+        self._alarm_overlay.hide()
+        self._heading.show()
+        self._instructions.show()
+        self._status.show()
+        self._alarm_label.setVisible(True)
+        self._alarm_overlay.setStyleSheet("")
+
+    def _on_alarm_blink(self) -> None:
+        self._alarm_flash_on = not self._alarm_flash_on
+        self._alarm_overlay.setStyleSheet(
+            alarm_flash_stylesheet(on=self._alarm_flash_on)
+        )
+        self._alarm_label.setVisible(not self._alarm_label.isVisible())
 
     def _stop_recording(self) -> None:
         if not confirm_action(
@@ -392,14 +621,16 @@ class RecordingScreen(ScreenWidget):
         ):
             return
         self._stop.setEnabled(False)
-        self._status.setText("Stopping recording…")
-        worker = CallableWorker(self.controller.finish_recording)
-        worker.finished_ok.connect(lambda _job: self.navigate.emit("B5"))
-        worker.failed.connect(
-            lambda msg: QMessageBox.warning(self, "Stop failed", msg)
+        self._stop_heartbeat()
+        self._recording_confirmed = False
+        self._stop_lost_alarm()
+        self._set_status("Stopping recording…", error=False)
+        start_callable_worker(
+            self,
+            self.controller.finish_recording,
+            on_ok=lambda _job: self.navigate.emit("B5"),
+            on_fail=lambda msg: QMessageBox.warning(self, "Stop failed", msg),
         )
-        worker.start()
-        self._worker = worker
 
     def _confirm_back(self) -> None:
         if self._recording_started:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +63,106 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def is_piab_app_command_line(command: str | None) -> bool:
+    if not command:
+        return False
+    compact = " ".join(command.lower().replace("/", "\\").split())
+    return "-m app.main" in compact or compact.endswith("app\\main.py") or "\\app\\main.py " in compact
+
+
+def _no_window_flags() -> int:
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _command_line_for_pid(pid: int) -> str | None:
+    if pid <= 0 or os.name != "nt":
+        return None
+    proc = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine",
+        ],
+        capture_output=True,
+        text=True,
+        creationflags=_no_window_flags(),
+    )
+    text = (proc.stdout or "").strip()
+    return text or None
+
+
+def _piab_app_pids(*, exclude: int) -> list[int]:
+    if os.name != "nt":
+        return []
+    script = (
+        "Get-CimInstance Win32_Process | ForEach-Object { "
+        "if ($_.CommandLine -and ($_.CommandLine -match '-m\\s+app\\.main')) { "
+        "$_.ProcessId } }"
+    )
+    proc = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        creationflags=_no_window_flags(),
+    )
+    pids: list[int] = []
+    for line in (proc.stdout or "").splitlines():
+        text = line.strip()
+        if not text.isdigit():
+            continue
+        value = int(text)
+        if value != exclude:
+            pids.append(value)
+    return pids
+
+
+def _terminate_pid(pid: int) -> None:
+    if pid <= 0:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            creationflags=_no_window_flags(),
+        )
+        return
+    os.kill(pid, 9)
+
+
+def _wait_until_dead(pid: int, *, timeout_sec: float = 5.0) -> bool:
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.1)
+    return not _pid_alive(pid)
+
+
+def terminate_other_piab_apps(*, extra_pids: list[int] | None = None) -> tuple[list[int], str]:
+    """Kill other PIAB GUI processes so a new instance can take the lock."""
+    me = os.getpid()
+    candidates = set(_piab_app_pids(exclude=me))
+    for pid in extra_pids or []:
+        if pid > 0 and pid != me:
+            candidates.add(pid)
+
+    killed: list[int] = []
+    blocked: list[str] = []
+    for pid in sorted(candidates):
+        command = _command_line_for_pid(pid)
+        if command is not None and not is_piab_app_command_line(command):
+            blocked.append(f"pid {pid} is not a PIAB app process")
+            continue
+        _terminate_pid(pid)
+        if _wait_until_dead(pid):
+            killed.append(pid)
+        else:
+            blocked.append(f"pid {pid} is still running")
+    return killed, "; ".join(blocked)
 
 
 class AppLock:
@@ -146,3 +248,10 @@ class AppLock:
             return
         ids = [item for item in (state.processing_job_ids or []) if item != job_id]
         self.update(processing_job_ids=ids)
+
+    def terminate_other_instances(self) -> tuple[list[int], str]:
+        extra: list[int] = []
+        existing = self.read()
+        if existing is not None and existing.pid != os.getpid():
+            extra.append(existing.pid)
+        return terminate_other_piab_apps(extra_pids=extra)

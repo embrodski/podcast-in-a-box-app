@@ -8,7 +8,11 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout
 
-from app.controller.prep_progress import clear_prep_failure, failure_summary
+from app.controller.prep_progress import (
+    FAST_PREVIEW_ETA_DISPLAY,
+    clear_prep_failure,
+    failure_summary,
+)
 from app.controller.storage_gate import assess_prep_storage
 from app.gui.dialogs import (
     REMOVE_FROM_QUEUE_TEXT,
@@ -20,13 +24,6 @@ from app.gui.storage_prompts import gate_low_disk, maybe_offer_clean_on_disk_fai
 from app.gui.widgets.path_banner import PathBanner
 from app.gui.widgets.screen_base import ScreenWidget
 from app.gui.widgets.selectable_text import body_label, heading_label
-
-
-def _session_folder(screen: ScreenWidget) -> Path | None:
-    ctx = screen.context()
-    if ctx is None or ctx.session_folder is None:
-        return None
-    return ctx.session_folder
 
 
 def e1_close_requires_confirm(
@@ -105,7 +102,7 @@ class ProcessingScreen(ScreenWidget):
         self._poll.timeout.connect(self._on_poll_tick)
 
     def on_enter(self) -> None:
-        folder = _session_folder(self)
+        folder = self.session_folder()
         if folder is None:
             self._current.setText("No session folder.")
             self._steps.setText("")
@@ -178,25 +175,16 @@ class ProcessingScreen(ScreenWidget):
         self._poll.stop()
         super().hideEvent(event)
 
+    def release_idle_resources(self) -> None:
+        self._poll.stop()
+        super().release_idle_resources()
+
     def prepare_for_abort_close(self) -> None:
         self._poll.stop()
         self._prep_job_id = None
 
-    def _start_processing_job(
-        self,
-        folder: Path,
-        state: dict,
-        *,
-        allow_overwrite: bool,
-        resume: bool = False,
-    ):
-        return self.controller.request_fast_preview(
-            folder,
-            allow_overwrite=allow_overwrite,
-        )
-
     def _start_prep(self) -> None:
-        folder = _session_folder(self)
+        folder = self.session_folder()
         if folder is None or self._starting:
             return
         held = self.controller.job_queue.entry_for(folder, "fast_preview")
@@ -206,7 +194,7 @@ class ProcessingScreen(ScreenWidget):
 
         ctx = self.context()
         try:
-            state = self.controller.load_session_state(folder)
+            self.controller.load_session_state(folder)
         except Exception as exc:
             self._current.setText("Could not read session state.")
             self._detail.setText(str(exc))
@@ -231,13 +219,12 @@ class ProcessingScreen(ScreenWidget):
         self._hold.hide()
         self._abort.show()
         self._current.setText("Starting Fast Preview…")
-        self._detail.setText("This may take a while. Do not close the app.")
+        self._detail.setText(f"{FAST_PREVIEW_ETA_DISPLAY}. Do not close the app.")
         clear_prep_failure(folder)
 
         try:
-            job = self._start_processing_job(
+            job = self.controller.request_fast_preview(
                 folder,
-                state,
                 allow_overwrite=allow_overwrite,
             )
         except RuntimeError as exc:
@@ -299,7 +286,7 @@ class ProcessingScreen(ScreenWidget):
         self._home.show()
 
     def _confirm_hold(self) -> None:
-        folder = _session_folder(self)
+        folder = self.session_folder()
         if folder is None or self._prep_job_id is not None:
             return
         if not confirm_hold_outside_queue(self):
@@ -313,7 +300,7 @@ class ProcessingScreen(ScreenWidget):
         self.navigate.emit("A1")
 
     def _confirm_abort(self) -> None:
-        folder = _session_folder(self)
+        folder = self.session_folder()
         if self._prep_job_id is None:
             if folder is None:
                 return
@@ -348,7 +335,7 @@ class ProcessingScreen(ScreenWidget):
     def _on_poll_tick(self) -> None:
         if not self.isVisible():
             return
-        folder = _session_folder(self)
+        folder = self.session_folder()
         if folder is None:
             return
 

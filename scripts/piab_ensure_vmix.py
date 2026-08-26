@@ -66,6 +66,13 @@ def launch_vmix(
 
 
 def _default_launch(executable: Path) -> None:
+    # Explorer-style launch so vMix gets a normal visible window. subprocess.Popen
+    # from pythonw (desktop shortcut) can start a process with no UI / no HTTP API.
+    if sys.platform == "win32":
+        import os
+
+        os.startfile(str(executable))  # noqa: S606
+        return
     subprocess.Popen(
         [str(executable)],
         cwd=str(executable.parent),
