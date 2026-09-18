@@ -111,7 +111,13 @@ class WindowManager:
             return
         self.open_flow(screen_id)
 
-    def open_flow(self, screen_id: str, *, folder: Path | None = None) -> MainWindow:
+    def open_flow(
+        self,
+        screen_id: str,
+        *,
+        folder: Path | None = None,
+        entry_path: str | None = None,
+    ) -> MainWindow:
         if folder is not None:
             existing = self._flow_for_folder(folder)
             if existing is not None:
@@ -125,6 +131,8 @@ class WindowManager:
                 final.raise_()
                 return final
         ctx = SessionContext()
+        if entry_path:
+            ctx.reset(entry_path=entry_path)
         if folder is not None:
             ctx.session_folder = folder
         window = self._make_window(

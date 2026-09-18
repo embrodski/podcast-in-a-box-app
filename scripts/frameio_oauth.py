@@ -21,6 +21,8 @@ DEFAULT_SCOPES = "openid email profile offline_access additional_info.roles"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TOKEN_PATH = REPO_ROOT / ".frameio-oauth.json"
 DEFAULT_PENDING_PATH = REPO_ROOT / ".frameio-oauth-pending.json"
+ACCESS_TOKEN_LIFETIME_SEC = 24 * 3600 - 60
+KEEP_ALIVE_MIN_INTERVAL_SEC = 12 * 3600
 
 PIAB_DEFAULTS = {
     "client_id": "47e70e7744c24ea3af17598e2f845192",
@@ -206,13 +208,15 @@ def _normalize_token_payload(
     if not access_token:
         raise RuntimeError("Adobe token response missing access_token.")
     expires_in = int(payload.get("expires_in") or 3600)
+    now = time.time()
     return {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "access_token": access_token,
         "refresh_token": str(payload.get("refresh_token") or "").strip(),
         "token_type": str(payload.get("token_type") or "bearer"),
-        "expires_at": time.time() + max(30, expires_in - 60),
+        "expires_at": now + max(30, expires_in - 60),
+        "refreshed_at": now,
         "scopes": str(payload.get("scope") or DEFAULT_SCOPES),
     }
 
@@ -225,6 +229,68 @@ def load_token_data(path: Path = DEFAULT_TOKEN_PATH) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def last_refreshed_at(data: dict[str, Any]) -> float:
+    """When the saved login was last successfully refreshed (unix seconds)."""
+    raw = data.get("refreshed_at")
+    try:
+        stamped = float(raw)
+    except (TypeError, ValueError):
+        stamped = 0.0
+    if stamped > 0:
+        return stamped
+    try:
+        expires_at = float(data.get("expires_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if expires_at <= 0:
+        return 0.0
+    return max(0.0, expires_at - ACCESS_TOKEN_LIFETIME_SEC)
+
+
+@dataclass(frozen=True)
+class KeepAliveResult:
+    status: str
+    message: str
+
+    @property
+    def ok(self) -> bool:
+        return self.status in {"refreshed", "skipped"}
+
+
+def keep_frameio_oauth_alive(
+    path: Path = DEFAULT_TOKEN_PATH,
+    *,
+    now: float | None = None,
+    min_interval_sec: float = KEEP_ALIVE_MIN_INTERVAL_SEC,
+    refresh: Any = None,
+) -> KeepAliveResult:
+    """
+    Refresh the saved Adobe login so the 14-day refresh token does not expire.
+
+    Skips when there is no login, or when we already refreshed within
+    ``min_interval_sec`` *and* the access token is still valid.
+    """
+    data = load_token_data(path)
+    if not data or not str(data.get("refresh_token") or "").strip():
+        return KeepAliveResult("skipped", "No saved Frame.io login to refresh.")
+    clock = time.time() if now is None else float(now)
+    expires_at = float(data.get("expires_at") or 0)
+    age = clock - last_refreshed_at(data)
+    still_valid = expires_at > clock
+    if still_valid and age < float(min_interval_sec):
+        return KeepAliveResult(
+            "skipped",
+            f"Frame.io login is still fresh ({age / 3600:.1f}h since last refresh).",
+        )
+    try:
+        refresher = refresh if refresh is not None else refresh_access_token
+        refreshed = refresher(data)
+        save_token_data(refreshed, path)
+    except Exception as exc:
+        return KeepAliveResult("failed", str(exc))
+    return KeepAliveResult("refreshed", "Frame.io OAuth token refreshed.")
 
 
 def get_valid_access_token(path: Path = DEFAULT_TOKEN_PATH) -> str | None:

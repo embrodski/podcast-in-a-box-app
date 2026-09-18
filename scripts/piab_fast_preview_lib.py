@@ -266,6 +266,11 @@ def save_fast_preview_approval(
     return bundle
 
 
+def preview_approval_was_skipped(state: dict | None) -> bool:
+    approval = (state or {}).get("fast_preview_approval") or {}
+    return bool(approval.get("skipped_preview"))
+
+
 def apply_fast_preview_approval_to_state(state: dict) -> None:
     """Copy recorded preview choices onto canonical session fields before full prep."""
     approval = state.get("fast_preview_approval")

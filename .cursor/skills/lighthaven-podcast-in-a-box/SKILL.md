@@ -215,7 +215,7 @@ python scripts/harness_frameio_discover.py --write-env
 
 After Adobe sign-in, allow the browser prompt to **Open** the PIAB OAuth handler. App Builder projects often do not expose Redirect URI editing; this path uses the existing Native App credential without changing Adobe Console.
 
-Tokens live in `.frameio-oauth.json` (gitignored) and refresh automatically.
+Tokens live in `.frameio-oauth.json` (gitignored) and refresh automatically. Adobe refresh tokens expire after **14 days**; PIAB refreshes them when the app starts and via a weekly Windows scheduled task (`harness_frameio_oauth.py keep-alive` / `install-keep-alive`). The first app launch after this change installs the task. Re-run `login` if a keep-alive fails with `access_denied`.
 
 **After recording flow (Step 0e → continue):** scan the default folder and confirm the newest cluster.
 

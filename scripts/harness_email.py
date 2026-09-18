@@ -11,6 +11,10 @@ from typing import Callable
 
 PIAB_ERROR_REPORT_TO = "lighthavenpodcastroom@gmail.com"
 PIAB_ERROR_REPORT_SUBJECT = "PIAB autocut error"
+FILES_SAFE_NOTE = (
+    "Do not worry, all video and audio files are still saved on the "
+    "Podcast Room harddrive."
+)
 
 
 @dataclass(frozen=True)
@@ -114,11 +118,12 @@ def send_piab_error_email(
     session_log: str,
     sender: Callable[[SmtpConfig, EmailMessage], None] | None = None,
 ) -> None:
+    body = f"{FILES_SAFE_NOTE}\n\n{session_log.lstrip()}"
     send_email(
         config,
         to_addr=PIAB_ERROR_REPORT_TO,
         subject=PIAB_ERROR_REPORT_SUBJECT,
-        body=session_log,
+        body=body,
         sender=sender,
     )
 
@@ -135,6 +140,7 @@ def send_delivery_failure_email(
     subject = f"Podcast delivery failed — {episode_name}"
     body = (
         f"We finished rendering {episode_name}, but uploading or sharing the video failed.\n\n"
+        f"{FILES_SAFE_NOTE}\n\n"
         f"Local file:\n{local_path}\n\n"
         f"Error:\n{error_summary}\n"
     )

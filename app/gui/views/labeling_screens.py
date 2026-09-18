@@ -18,11 +18,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from app.controller.prep_progress import FAST_PREVIEW_ETA_DISPLAY
 from app.gui.dialogs import confirm_action
 from app.gui.widgets.path_banner import PathBanner
 from app.gui.widgets.screen_base import ScreenWidget
@@ -71,6 +71,8 @@ class LabelCamerasScreen(ScreenWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
+        self._banner = PathBanner()
+        layout.addWidget(self._banner)
         layout.addWidget(heading_label("Label cameras"))
         self._intro = body_label(
             "For each camera preview, choose Host, Guest, Wide, or Do not use. "
@@ -91,7 +93,7 @@ class LabelCamerasScreen(ScreenWidget):
 
         row = QHBoxLayout()
         back = QPushButton("Back")
-        back.clicked.connect(lambda: self.navigate.emit("C4"))
+        back.clicked.connect(self._go_back)
         row.addWidget(back)
         row.addStretch()
         self._continue = QPushButton("Continue")
@@ -100,8 +102,14 @@ class LabelCamerasScreen(ScreenWidget):
         row.addWidget(self._continue)
         layout.addLayout(row)
 
+        skip = QPushButton("Skip Autocut")
+        skip.setMinimumHeight(44)
+        skip.clicked.connect(self._skip_autocut)
+        layout.addWidget(skip)
+
     def on_enter(self) -> None:
         folder = self.session_folder()
+        self._banner.set_path(folder)
         if folder is None:
             self._status.setText("No session folder. Go back and create a session first.")
             return
@@ -204,6 +212,20 @@ class LabelCamerasScreen(ScreenWidget):
             if role:
                 labels[source] = role
         return labels
+
+    def _go_back(self) -> None:
+        ctx = self.context()
+        if ctx is not None and ctx.entry_path == "record":
+            self.navigate.emit("B3")
+            return
+        self.navigate.emit("C2a")
+
+    def _skip_autocut(self) -> None:
+        window = self.window()
+        if hasattr(window, "close_flow_to_home"):
+            window.close_flow_to_home()
+            return
+        self.navigate.emit("A1")
 
     def _go_next(self) -> None:
         labels = self._collect_labels()
@@ -563,8 +585,31 @@ class ApplyLabelsScreen(ScreenWidget):
                 self.on_enter()
 
 
+def _d4_choice_column(
+    title: str,
+    body: str,
+    button: QPushButton,
+) -> QWidget:
+    column = QWidget()
+    layout = QVBoxLayout(column)
+    layout.setContentsMargins(16, 8, 16, 8)
+    layout.setSpacing(16)
+    heading = heading_label(title, word_wrap=True)
+    heading.setAlignment(Qt.AlignCenter)
+    heading.setStyleSheet("font-size: 20px; font-weight: 600;")
+    copy = body_label(body)
+    copy.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+    button.setMinimumHeight(44)
+    layout.addStretch()
+    layout.addWidget(heading)
+    layout.addWidget(copy)
+    layout.addWidget(button)
+    layout.addStretch()
+    return column
+
+
 class EstimatePrepScreen(ScreenWidget):
-    """D4 — show Estimate A and offer to start prep."""
+    """D4 — choose 1-minute preview or skip straight to full autocut."""
 
     screen_id = "D4"
 
@@ -575,52 +620,102 @@ class EstimatePrepScreen(ScreenWidget):
         layout.setSpacing(12)
 
         layout.addWidget(heading_label("Ready to process"))
-        self._summary = body_label("")
-        layout.addWidget(self._summary)
 
         self._banner = PathBanner()
         layout.addWidget(self._banner)
 
-        layout.addStretch()
+        columns = QHBoxLayout()
+        columns.setSpacing(24)
+
+        self._preview_btn = QPushButton("Create 1-minute Preview")
+        self._preview_btn.setDefault(True)
+        self._preview_btn.clicked.connect(self._create_one_minute_preview)
+        left = _d4_choice_column(
+            "One Minute Preview",
+            "We can create a 1-minute preview for you to ensure things are looking good. "
+            "This will take about 4 minutes, please stay here while its processing.",
+            self._preview_btn,
+        )
+        left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        columns.addWidget(left, stretch=1)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.VLine)
+        divider.setFrameShadow(QFrame.Shadow.Sunken)
+        columns.addWidget(divider)
+
+        self._full_btn = QPushButton("Straight To Autocut")
+        self._full_btn.clicked.connect(self._straight_to_autocut)
+        right = _d4_choice_column(
+            "I Trust You",
+            "We can skip straight to cutting the full episode together and emailing it "
+            "to you, so you can go about your day. Your files will still be here in "
+            "case anything goes wrong, for you to try again or cut manually.",
+            self._full_btn,
+        )
+        right.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        columns.addWidget(right, stretch=1)
+        layout.addLayout(columns, stretch=1)
 
         row = QHBoxLayout()
         back = QPushButton("Back")
         back.clicked.connect(lambda: self.navigate.emit("D2"))
         row.addWidget(back)
         row.addStretch()
-        start = QPushButton("Start processing")
-        start.setMinimumHeight(44)
-        start.setDefault(True)
-        start.clicked.connect(lambda: self.navigate.emit("E1"))
-        row.addWidget(start)
+        skip = QPushButton("Skip Autocut")
+        skip.clicked.connect(self._skip_autocut)
+        row.addWidget(skip)
         layout.addLayout(row)
 
     def on_enter(self) -> None:
+        self._set_choices_enabled(True)
+        folder = self.session_folder()
+        self._banner.set_path(folder)
+
+    def _set_choices_enabled(self, enabled: bool) -> None:
+        self._preview_btn.setEnabled(enabled)
+        self._full_btn.setEnabled(enabled)
+
+    def _create_one_minute_preview(self) -> None:
+        self.navigate.emit("E1")
+
+    def _skip_autocut(self) -> None:
+        window = self.window()
+        if hasattr(window, "close_flow_to_home"):
+            window.close_flow_to_home()
+            return
+        self.navigate.emit("A1")
+
+    def _queue_full_after_skip(self, folder: Path) -> Path:
+        self.controller.skip_fast_preview(folder)
+        self.controller.request_full_job(folder)
+        return folder
+
+    def _straight_to_autocut(self) -> None:
         folder = self.session_folder()
         if folder is None:
-            self._summary.setText("No session folder.")
-            self._banner.set_path(None)
+            QMessageBox.warning(
+                self,
+                "No session folder",
+                "Create or open a session before starting autocut.",
+            )
             return
-
-        self._banner.set_path(folder)
-        try:
-            state = self.controller.load_session_state(folder)
-        except Exception as exc:
-            self._summary.setText(f"Could not read session state:\n{exc}")
-            return
-
-        eta = state.get("estimate_prep") or {}
-        source_human = str(
-            (eta.get("breakdown") or {}).get("source_duration_human") or "?"
+        self._set_choices_enabled(False)
+        start_callable_worker(
+            self,
+            self._queue_full_after_skip,
+            folder,
+            on_ok=self._on_full_queued,
+            on_fail=self._on_full_queue_fail,
         )
-        lines = [
-            "Labeling is complete. Files are in the session Raw folder.",
-            "",
-            f"Source recording length: {source_human}",
-            "",
-            "Next: Fast Preview (a short 1-minute review from preview clips).",
-            FAST_PREVIEW_ETA_DISPLAY + ".",
-            "",
-            "Full-length files are not created until you approve the preview.",
-        ]
-        self._summary.setText("\n".join(lines))
+
+    def _on_full_queued(self, folder: object) -> None:
+        window = self.window()
+        if hasattr(window, "handoff_to_final_render"):
+            window.handoff_to_final_render(Path(str(folder)))
+            return
+        self.navigate.emit("F4")
+
+    def _on_full_queue_fail(self, message: str) -> None:
+        self._set_choices_enabled(True)
+        QMessageBox.warning(self, "Could not start full autocut", message)

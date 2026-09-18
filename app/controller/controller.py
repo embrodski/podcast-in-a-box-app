@@ -61,6 +61,7 @@ from app.controller.failure_info import FailureInfo, read_failure_info
 from app.controller.fast_preview import (
     approve_fast_preview,
     clear_preview_for_relabel,
+    skip_fast_preview,
     fast_preview_eligible_for_state,
     fast_preview_review_pending,
     full_after_preview_pending,
@@ -636,6 +637,9 @@ class PiabController:
 
     def approve_fast_preview(self, working_folder: Path) -> dict:
         return approve_fast_preview(working_folder)
+
+    def skip_fast_preview(self, working_folder: Path) -> dict:
+        return skip_fast_preview(working_folder)
 
     def clear_preview_for_relabel(self, working_folder: Path) -> dict:
         return clear_preview_for_relabel(working_folder)

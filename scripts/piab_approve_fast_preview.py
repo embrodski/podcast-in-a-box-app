@@ -18,23 +18,31 @@ from piab_fast_preview_lib import (
 from piab_lib import load_piab_state, mark_step, print_json, save_piab_state
 
 
-def approve_fast_preview(working_folder: Path) -> dict:
+def approve_fast_preview(working_folder: Path, *, skip_preview: bool = False) -> dict:
     working = working_folder.resolve()
     state = load_piab_state(working)
 
-    preview_mode = (state.get("fast_preview") or {}).get("preview_render_mode", "head_autocut")
-    sync_ab = bool((state.get("fast_preview") or {}).get("sync_ab_required"))
-    preview_path = resolve_preview_one_min_path(state, working)
+    if skip_preview:
+        preview_mode = "skipped"
+        sync_ab = False
+        preview_path_text = ""
+    else:
+        preview_mode = (state.get("fast_preview") or {}).get("preview_render_mode", "head_autocut")
+        sync_ab = bool((state.get("fast_preview") or {}).get("sync_ab_required"))
+        preview_path_text = str(resolve_preview_one_min_path(state, working).resolve())
 
     save_fast_preview_approval(
         state,
         sync_offset_choice=state.get("sync_offset_choice"),
         swap_speaker_ids=bool(state.get("swap_speaker_ids")),
         preview_render_mode=str(preview_mode),
-        preview_one_min_path=str(preview_path.resolve()),
+        preview_one_min_path=preview_path_text,
         sync_ab_required=sync_ab,
     )
-    snapshot_preview_sandbox_artifacts(state)
+    if skip_preview:
+        state["fast_preview_approval"]["skipped_preview"] = True
+    else:
+        snapshot_preview_sandbox_artifacts(state)
 
     restore_canonical_paths(state)
 
@@ -51,13 +59,21 @@ def approve_fast_preview(working_folder: Path) -> dict:
     ):
         state.pop(key, None)
 
+    approval_extra: dict = {
+        "preview": not skip_preview,
+        "skipped": skip_preview,
+        "preview_one_min_path": preview_path_text,
+    }
+    if skip_preview:
+        approval_extra["note"] = (
+            "Skipped 1-minute preview — user chose Straight To Autocut."
+        )
     mark_step(
         state,
         "11_one_min_approval",
         title="Fast Preview approval",
         status="completed",
-        preview=True,
-        preview_one_min_path=str(preview_path),
+        **approval_extra,
     )
     mark_step(
         state,
@@ -75,9 +91,14 @@ def approve_fast_preview(working_folder: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Approve PIAB Fast Preview and continue to full prep.")
     parser.add_argument("working_folder", type=Path)
+    parser.add_argument(
+        "--skip-preview",
+        action="store_true",
+        help="Approve without a 1-min preview (Straight To Autocut).",
+    )
     args = parser.parse_args()
     try:
-        state = approve_fast_preview(args.working_folder)
+        state = approve_fast_preview(args.working_folder, skip_preview=args.skip_preview)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

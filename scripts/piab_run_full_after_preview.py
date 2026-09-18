@@ -37,6 +37,7 @@ from harness_video_sync import find_scope_videos, run_video_sync
 from piab_fast_preview_lib import (
     apply_fast_preview_approval_to_state,
     is_short_source_state,
+    preview_approval_was_skipped,
     promote_short_source_preview_to_canonical,
 )
 from piab_lib import load_piab_state, mark_step, print_json, save_piab_state
@@ -91,7 +92,7 @@ def run_full_prep_after_preview(
     working = working.resolve()
     state = load_piab_state(working)
     apply_fast_preview_approval_to_state(state)
-    if is_short_source_state(state):
+    if is_short_source_state(state) and not preview_approval_was_skipped(state):
         return promote_short_source_preview_to_canonical(
             working, allow_overwrite=allow_overwrite
         )

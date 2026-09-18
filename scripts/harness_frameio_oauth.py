@@ -20,6 +20,7 @@ from frameio_oauth import (
     clear_pending_auth,
     exchange_authorization_code,
     get_valid_access_token,
+    keep_frameio_oauth_alive,
     load_pending_auth,
     parse_authorization_response,
     save_pending_auth,
@@ -27,8 +28,10 @@ from frameio_oauth import (
 )
 from frameio_oauth_windows import (
     clear_capture,
+    ensure_keepalive_task,
     register_protocol_handler,
     scheme_from_redirect_uri,
+    uninstall_keepalive_task,
     unregister_protocol_handler,
     wait_for_capture,
     write_capture,
@@ -128,6 +131,11 @@ def _login_native_protocol(args: argparse.Namespace) -> int:
     print("After sign-in, Windows should ask to open PIAB OAuth.")
     print("Click Allow / Open so the authorization code can be captured.")
     print()
+
+    try:
+        register_protocol_handler(scheme=scheme)
+    except OSError as exc:
+        print(f"WARNING: could not register the Windows OAuth handler: {exc}")
 
     pending = build_authorization_request(
         client_id=client_id,
@@ -330,6 +338,38 @@ def _status(_args: argparse.Namespace) -> int:
     return 1
 
 
+def _keep_alive(_args: argparse.Namespace) -> int:
+    from win_hidden_console import install_hidden_console
+
+    install_hidden_console()
+    result = keep_frameio_oauth_alive()
+    print(f"{result.status}: {result.message}")
+    return 0 if result.ok else 1
+
+
+def _install_keep_alive(_args: argparse.Namespace) -> int:
+    try:
+        status = ensure_keepalive_task()
+    except (OSError, RuntimeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"Weekly Frame.io OAuth keep-alive task {status}.")
+    return 0
+
+
+def _uninstall_keep_alive(_args: argparse.Namespace) -> int:
+    try:
+        removed = uninstall_keepalive_task()
+    except (OSError, RuntimeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    if removed:
+        print("Removed weekly Frame.io OAuth keep-alive task.")
+    else:
+        print("No weekly Frame.io OAuth keep-alive task was installed.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Frame.io Native App OAuth setup.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -373,6 +413,24 @@ def main() -> int:
 
     status = sub.add_parser("status", help="Check whether saved tokens work.")
     status.set_defaults(func=_status)
+
+    keep = sub.add_parser(
+        "keep-alive",
+        help="Refresh saved Frame.io tokens if they are older than 12 hours.",
+    )
+    keep.set_defaults(func=_keep_alive)
+
+    install_keep = sub.add_parser(
+        "install-keep-alive",
+        help="Install a weekly Windows scheduled task that refreshes Frame.io tokens.",
+    )
+    install_keep.set_defaults(func=_install_keep_alive)
+
+    uninstall_keep = sub.add_parser(
+        "uninstall-keep-alive",
+        help="Remove the weekly Frame.io token keep-alive scheduled task.",
+    )
+    uninstall_keep.set_defaults(func=_uninstall_keep_alive)
 
     args = parser.parse_args()
     return int(args.func(args))

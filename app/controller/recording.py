@@ -68,8 +68,10 @@ def _quoted_phrase(phrase: str, color: str) -> str:
     return f'"<span style="color:{color};">{html.escape(phrase)}</span>"'
 
 
-def recording_controls_html() -> str:
-    """Centered rich-text copy for the B4 recording-controls panel."""
+WARMUP_PHRASES_INTRO = "Once cameras are warmed up, these are your go/stop phrases:"
+
+
+def _recording_quoted_phrases() -> tuple[str, str, str, str]:
     ensure_scripts_path()
     from podcast_phrase_gates import (
         end_phrases_from_gates,
@@ -87,12 +89,42 @@ def recording_controls_html() -> str:
     pause = pause_phrases[0] if pause_phrases else ""
     resume = unpause_phrases[0] if unpause_phrases else ""
     end = end_phrases[0] if end_phrases else ""
+    return (
+        _quoted_phrase(start, _PHRASE_COLOR_GREEN),
+        _quoted_phrase(pause, _PHRASE_COLOR_BLUE),
+        _quoted_phrase(resume, _PHRASE_COLOR_BLUE),
+        _quoted_phrase(end, _PHRASE_COLOR_GREEN),
+    )
 
+
+def recording_phrase_lines_html() -> str:
+    """Start / pause / resume / end phrase lines (no wrapping div)."""
+    start_q, pause_q, resume_q, end_q = _recording_quoted_phrases()
     large = f"font-size:{_PHRASE_FONT_SIZE};"
-    start_q = _quoted_phrase(start, _PHRASE_COLOR_GREEN)
-    pause_q = _quoted_phrase(pause, _PHRASE_COLOR_BLUE)
-    resume_q = _quoted_phrase(resume, _PHRASE_COLOR_BLUE)
-    end_q = _quoted_phrase(end, _PHRASE_COLOR_GREEN)
+    return (
+        f'<span style="{large}">Start Phrase is {start_q}</span><br>'
+        "<br>"
+        f'<span style="{large}">Pause Phrase is {pause_q}</span><br>'
+        f'<span style="{large}">Resume Phrase is {resume_q}</span><br>'
+        "<br>"
+        f'<span style="{large}">End Phrase is {end_q}</span>'
+    )
+
+
+def recording_warmup_phrases_html() -> str:
+    """Phrase cheat-sheet shown on the B4 camera-warmup page."""
+    large = f"font-size:{_PHRASE_FONT_SIZE};"
+    return (
+        '<div style="text-align:center;">'
+        f'<span style="{large}">{html.escape(WARMUP_PHRASES_INTRO)}</span><br>'
+        "<br>"
+        f"{recording_phrase_lines_html()}"
+        "</div>"
+    )
+
+
+def recording_controls_html() -> str:
+    """Centered rich-text copy for the B4 recording-controls panel."""
     warning = (
         f'<span style="color:{_WARNING_COLOR_RED};">'
         f"{html.escape('THIS WILL STOP RECORDING! DO NOT PUSH UNTIL YOU ARE DONE WITH THE PODCAST!')}"
@@ -102,12 +134,7 @@ def recording_controls_html() -> str:
         '<div style="text-align:center;">'
         "Program is running.<br>"
         "<br>"
-        f'<span style="{large}">Start Phrase is {start_q}</span><br>'
-        "<br>"
-        f'<span style="{large}">Pause Phrase is {pause_q}</span><br>'
-        f'<span style="{large}">Resume Phrase is {resume_q}</span><br>'
-        "<br>"
-        f'<span style="{large}">End Phrase is {end_q}</span><br>'
+        f"{recording_phrase_lines_html()}<br>"
         "<br>"
         "<br>"
         f"When you are done, press Stop. {warning}"

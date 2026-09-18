@@ -5,9 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtGui import QFont, QIcon, QPalette
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
-from app.controller.paths import DEFAULT_SCAN_ROOT, DEFAULT_WORK_ROOT
+from app.controller.paths import APP_ICON_ICO, DEFAULT_SCAN_ROOT, DEFAULT_WORK_ROOT
 from app.controller.storage_gate import (
     CLEAN_WORKING_FILES_BUTTON,
     clean_working_files_button_text,
@@ -62,20 +71,36 @@ class WelcomeScreen(ScreenWidget):
         self._banner.hide()
         layout.addWidget(self._banner)
 
-        new_btn = QPushButton("New session")
-        new_btn.setMinimumHeight(44)
-        new_btn.clicked.connect(lambda: self.navigate.emit("A3"))
+        new_btn = self._build_new_session_button()
+        new_btn.clicked.connect(lambda: self._begin_session("record"))
         layout.addWidget(new_btn)
 
-        resume_btn = QPushButton("Resume session")
+        already_btn = QPushButton("Already recorded — start autocut")
+        already_btn.setMinimumHeight(44)
+        already_btn.clicked.connect(lambda: self._begin_session("already_recorded"))
+        layout.addWidget(already_btn)
+
+        secondary = QWidget()
+        secondary_row = QHBoxLayout(secondary)
+        secondary_row.setContentsMargins(0, 0, 0, 0)
+        secondary_row.setSpacing(12)
+
+        resume_btn = QPushButton("Resume Prior Session")
         resume_btn.setMinimumHeight(44)
+        resume_btn.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         resume_btn.clicked.connect(lambda: self.navigate.emit("A2"))
-        layout.addWidget(resume_btn)
+        secondary_row.addWidget(resume_btn, 1)
 
         self._clean_btn = QPushButton(CLEAN_WORKING_FILES_BUTTON)
         self._clean_btn.setMinimumHeight(44)
+        self._clean_btn.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self._clean_btn.clicked.connect(self._open_clean)
-        layout.addWidget(self._clean_btn)
+        secondary_row.addWidget(self._clean_btn, 1)
+        layout.addWidget(secondary)
 
         self._status_line = AutocutFooter()
         layout.addWidget(self._status_line)
@@ -103,6 +128,78 @@ class WelcomeScreen(ScreenWidget):
         close_btn = QPushButton("Close Program")
         close_btn.clicked.connect(self._close_program)
         layout.addWidget(close_btn)
+
+    def _begin_session(self, entry_path: str) -> None:
+        window = self.window()
+        if hasattr(window, "begin_session_flow"):
+            window.begin_session_flow(entry_path)
+            return
+        self.navigate.emit("C1")
+
+    def _build_new_session_button(self) -> QPushButton:
+        button = QPushButton()
+        button.setObjectName("newSessionButton")
+        button.setAccessibleName("New session")
+        button.setMinimumHeight(132)
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        button.setStyleSheet(
+            "QPushButton#newSessionButton QLabel {"
+            " background: transparent;"
+            " color: palette(button-text);"
+            "}"
+        )
+
+        icon_size = 48
+        row = QHBoxLayout(button)
+        row.setContentsMargins(18, 10, 18, 10)
+        row.setSpacing(12)
+        row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        icon = QLabel()
+        icon.setFixedSize(icon_size, icon_size)
+        icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        if APP_ICON_ICO.is_file():
+            pixmap = QIcon(str(APP_ICON_ICO)).pixmap(icon_size, icon_size)
+            icon.setPixmap(pixmap)
+        row.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(4)
+        text_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        title = QLabel("New session")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        title_font = QFont(button.font())
+        if title_font.pointSize() > 0:
+            title_font.setPointSize(title_font.pointSize() * 2)
+        else:
+            title_font.setPixelSize(max(title_font.pixelSize(), 13) * 2)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        title.setForegroundRole(QPalette.ColorRole.ButtonText)
+        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        subtitle = QLabel("record and autocut a new podcast")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        subtitle.setWordWrap(False)
+        sub_font = QFont(button.font())
+        sub_font.setBold(False)
+        subtitle.setFont(sub_font)
+        subtitle.setForegroundRole(QPalette.ColorRole.ButtonText)
+        subtitle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        text_col.addWidget(title)
+        text_col.addWidget(subtitle)
+        row.addLayout(text_col, 1)
+
+        spacer = QLabel()
+        spacer.setFixedSize(icon_size, icon_size)
+        spacer.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        row.addWidget(spacer, 0)
+        return button
 
     def _refresh_clean_button(self) -> None:
         try:

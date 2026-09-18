@@ -319,6 +319,54 @@ class FastPreviewLibTests(unittest.TestCase):
             int(round(raw["breakdown"]["one_min_render_sec"] / FAST_PREVIEW_ESTIMATE_DIVISOR)),
         )
 
+    def test_preview_approval_was_skipped(self) -> None:
+        from piab_fast_preview_lib import preview_approval_was_skipped
+
+        self.assertFalse(preview_approval_was_skipped({}))
+        self.assertFalse(
+            preview_approval_was_skipped({"fast_preview_approval": {"approved_at": "x"}})
+        )
+        self.assertTrue(
+            preview_approval_was_skipped(
+                {"fast_preview_approval": {"approved_at": "x", "skipped_preview": True}}
+            )
+        )
+
+
+class SkipPreviewApprovalTests(unittest.TestCase):
+    def test_skip_preview_records_approval_without_one_min_file(self) -> None:
+        from piab_approve_fast_preview import approve_fast_preview
+        from piab_fast_preview_lib import preview_approval_was_skipped
+        from piab_lib import save_piab_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            working = Path(tmp)
+            (working / "Raw").mkdir()
+            (working / "Input").mkdir()
+            (working / "Temp").mkdir()
+            (working / "Output").mkdir()
+            state = {
+                "kind": "podcast_in_a_box",
+                "name": "skip-preview",
+                "swap_speaker_ids": False,
+                "paths": {
+                    "raw": str(working / "Raw"),
+                    "input": str(working / "Input"),
+                    "temp": str(working / "Temp"),
+                    "output": str(working / "Output"),
+                },
+                "steps": {},
+            }
+            save_piab_state(working, state)
+            result = approve_fast_preview(working, skip_preview=True)
+            self.assertTrue(preview_approval_was_skipped(result))
+            self.assertTrue((result.get("fast_preview_approval") or {}).get("approved_at"))
+            self.assertEqual(result.get("resume_at"), "13_queued_full")
+            self.assertEqual(
+                (result.get("steps") or {}).get("11_one_min_approval", {}).get("status"),
+                "completed",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

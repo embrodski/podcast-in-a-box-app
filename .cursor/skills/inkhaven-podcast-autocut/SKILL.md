@@ -79,7 +79,9 @@ Ensure **`<temp folder>`** exists before writing JSON/DSL. Do **not** place tran
 
 **ElevenLabs diarization is not Ben/Guest-aware.** Word-level `speaker_0` / `speaker_1` in the detail JSON are arbitrary cluster IDs that can differ per WAV. `convert_transcript_json.py` maps `speaker_N` → integer `N`; `generate_full_dsl.py` maps integer `0` → Ben’s camera and `1` → Guest’s **by default**.
 
-**Exception:** when `--start-phrase` is set, `generate_full_dsl.py` identifies the speaker who said that phrase as Host and maps that transcript `speaker_id` → `speaker_0` (Host/Ben camera), with the other close-mic speaker → `speaker_1`. Manual **`--swap-speaker-ids`** on convert is only needed when there is no start phrase (or the user still wants to force a swap).
+**Extra clusters (`speaker_2` / `speaker_3`):** before DSL generation, conversion **promotes** an extra cluster into the Host (`0`) or Guest (`1`) slot when that cluster has **at least 2×** the speech time of that slot (and ≥2 seconds of speech). Typical flub: a room voice is `speaker_1` and the real guest is `speaker_2`. Disable with `--no-promote-extra-speakers`.
+
+**Exception:** when `--start-phrase` is set, `generate_full_dsl.py` identifies the speaker who said that phrase as Host and maps that transcript `speaker_id` → `speaker_0` (Host/Ben camera), with the other close-mic speaker → `speaker_1`. Manual **`--swap-speaker-ids`** on convert is only needed when there is no start phrase (or the user still wants to force a swap). Promotion of extra clusters runs **before** `--swap-speaker-ids`.
 
 ### Open and close on Ben (`generate_full_dsl.py`)
 

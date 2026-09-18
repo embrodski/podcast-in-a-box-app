@@ -18,7 +18,12 @@ from harness_deliver_video import (
     send_delivery_link_email,
     write_piab_output_transcripts,
 )
-from harness_email import SmtpConfig, send_delivery_success_email
+from harness_email import (
+    FILES_SAFE_NOTE,
+    SmtpConfig,
+    send_delivery_failure_email,
+    send_delivery_success_email,
+)
 from harness_piab_transcript import FULL_INTERVIEW_TRANSCRIPT_TXT
 
 
@@ -181,6 +186,31 @@ class DeliverVideoTests(unittest.TestCase):
         body = captured[0].get_content()
         self.assertIn("Flags in the final edit:", body)
         self.assertIn("00:01:00", body)
+
+    def test_failure_email_includes_files_safe_note(self) -> None:
+        captured: list = []
+
+        def capture(_config: SmtpConfig, message) -> None:
+            captured.append(message)
+
+        config = SmtpConfig(
+            host="smtp.test",
+            port=587,
+            user="u",
+            password="p",
+            sender="from@example.com",
+        )
+        send_delivery_failure_email(
+            config,
+            to_addr="guest@example.com",
+            episode_name="Jessiah",
+            local_path="E:\\Output\\Full Interview.mp4",
+            error_summary="Adobe token request failed",
+            sender=capture,
+        )
+        body = captured[0].get_content()
+        self.assertIn(FILES_SAFE_NOTE, body)
+        self.assertIn("Adobe token request failed", body)
 
     def test_resolve_short_url_from_output_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

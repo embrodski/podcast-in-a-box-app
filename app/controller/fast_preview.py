@@ -71,13 +71,21 @@ def _run_script(script: Path, argv: list[str]) -> None:
         )
 
 
-def approve_fast_preview(working_folder: Path) -> dict:
+def approve_fast_preview(working_folder: Path, *, skip_preview: bool = False) -> dict:
     folder = working_folder.resolve()
-    _run_script(SCRIPTS_DIR / "piab_approve_fast_preview.py", [str(folder)])
+    argv = [str(folder)]
+    if skip_preview:
+        argv.append("--skip-preview")
+    _run_script(SCRIPTS_DIR / "piab_approve_fast_preview.py", argv)
     ensure_scripts_path()
     from piab_lib import load_piab_state
 
     return load_piab_state(folder)
+
+
+def skip_fast_preview(working_folder: Path) -> dict:
+    """Record 1-min approval without a preview, then continue to full autocut."""
+    return approve_fast_preview(working_folder, skip_preview=True)
 
 
 def clear_preview_for_relabel(working_folder: Path) -> dict:

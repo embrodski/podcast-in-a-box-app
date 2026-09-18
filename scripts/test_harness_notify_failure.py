@@ -9,7 +9,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from harness_email import PIAB_ERROR_REPORT_SUBJECT, PIAB_ERROR_REPORT_TO
+from harness_email import (
+    FILES_SAFE_NOTE,
+    PIAB_ERROR_REPORT_SUBJECT,
+    PIAB_ERROR_REPORT_TO,
+)
 from harness_notify_failure import (
     FAILURE_JSON_NAME,
     collect_session_log,
@@ -120,7 +124,9 @@ class SessionLogAndEmailTests(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["Subject"], PIAB_ERROR_REPORT_SUBJECT)
         self.assertEqual(captured[0]["To"], PIAB_ERROR_REPORT_TO)
-        self.assertIn("Unknown segment: main", captured[0].get_content())
+        body = captured[0].get_content()
+        self.assertIn(FILES_SAFE_NOTE, body)
+        self.assertIn("Unknown segment: main", body)
 
     def test_send_error_report_email_skips_when_already_sent(self) -> None:
         captured: list = []

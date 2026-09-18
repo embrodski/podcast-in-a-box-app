@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 
 from PySide6.QtWidgets import QApplication
 
@@ -26,6 +27,20 @@ def _load_secrets() -> None:
     load_harness_env()
 
 
+def _frameio_keepalive_background() -> None:
+    """Refresh Adobe OAuth and ensure the weekly keep-alive task exists."""
+    try:
+        from frameio_oauth import keep_frameio_oauth_alive
+        from frameio_oauth_windows import ensure_keepalive_task
+
+        result = keep_frameio_oauth_alive()
+        if result.status == "failed":
+            print(f"Frame.io keep-alive: {result.message}", file=sys.stderr)
+        ensure_keepalive_task()
+    except Exception as exc:
+        print(f"Frame.io keep-alive skipped: {exc}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Podcast in a Box desktop app.")
     parser.add_argument(
@@ -41,6 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     install_hidden_console()
     _load_secrets()
     migrate_legacy_work_files()
+    threading.Thread(
+        target=_frameio_keepalive_background,
+        name="frameio-keepalive",
+        daemon=True,
+    ).start()
 
     apply_process_app_user_model_id()
     app = QApplication(sys.argv)

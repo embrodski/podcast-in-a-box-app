@@ -40,18 +40,14 @@ from app.gui.views import (
     ApplyLabelsScreen,
     LabelCamerasScreen,
     LabelMicrophonesScreen,
-    NewSessionScreen,
     OneMinReviewScreen,
     SyncOffsetReviewScreen,
     PreflightScreen,
     ProcessingScreen,
     e1_close_requires_confirm,
-    RecordingCompleteScreen,
     RecordingSavedScreen,
     RecordingScreen,
     ResumeScreen,
-    SessionNameScreen,
-    SessionReadyScreen,
     SourceLocationScreen,
     VmixEnsureScreen,
     VmixPresetScreen,
@@ -64,13 +60,10 @@ if TYPE_CHECKING:
     from app.gui.window_manager import WindowManager
 
 PREP_SCREENS = frozenset({
-    "A3",
     "C1",
     "C2",
     "C2a",
-    "C2b",
     "C3",
-    "C4",
     "D1",
     "D2",
     "D3",
@@ -82,7 +75,6 @@ PREP_SCREENS = frozenset({
     "B2",
     "B3",
     "B4",
-    "B5",
     "B6",
 })
 
@@ -124,20 +116,16 @@ class MainWindow(QMainWindow):
         self._register_screen(PreflightScreen(controller))
         self._register_screen(WelcomeScreen(controller))
         self._register_screen(ResumeScreen(controller))
-        self._register_screen(NewSessionScreen(controller))
         self._register_screen(CleanWorkingFilesScreen(controller))
         self._register_screen(VmixEnsureScreen(controller))
         self._register_screen(VmixPresetScreen(controller))
         self._register_screen(CameraSetupScreen(controller))
         self._register_screen(RecordingScreen(controller))
-        self._register_screen(RecordingCompleteScreen(controller))
         self._register_screen(RecordingSavedScreen(controller))
         self._register_screen(DeliveryScreen(controller))
         self._register_screen(SourceLocationScreen(controller))
         self._register_screen(ConfirmSourceScreen(controller))
-        self._register_screen(SessionNameScreen(controller))
         self._register_screen(CreateSessionScreen(controller))
-        self._register_screen(SessionReadyScreen(controller))
         self._register_screen(LabelCamerasScreen(controller))
         self._register_screen(LabelMicrophonesScreen(controller))
         self._register_screen(ApplyLabelsScreen(controller))
@@ -169,6 +157,9 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(screen)
 
     def begin_session_flow(self, entry_path: str) -> None:
+        if self.role == "home" and self.manager is not None:
+            self.manager.open_flow("C1", entry_path=entry_path)
+            return
         self._context.reset(entry_path=entry_path)
         self._session_folder = None
         self.navigate("C1", _internal=True)

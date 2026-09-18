@@ -1,4 +1,4 @@
-"""Autocut session setup screens C1–C4."""
+"""Autocut session setup screens C1–C3."""
 
 from __future__ import annotations
 
@@ -29,7 +29,6 @@ from app.controller.session_store import (
 )
 from app.gui.dialogs import choose_existing_session_action, confirm_action
 from app.gui.session_context import SessionContext
-from app.gui.widgets.path_banner import PathBanner
 from app.gui.widgets.screen_base import ScreenWidget
 from app.gui.widgets.selectable_text import (
     body_label,
@@ -85,43 +84,62 @@ def _cluster_label(option: dict) -> str:
 
 
 class DeliveryScreen(ScreenWidget):
-    """C1 — optional email delivery."""
+    """C1 — name the session and optional email delivery."""
 
     screen_id = "C1"
 
     def __init__(self, controller, parent=None) -> None:
         super().__init__(controller, parent)
+        self._suggested_name = ""
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
+        layout.addWidget(heading_label("Name Your Session"))
         layout.addWidget(
             body_label(
-                "When your edited interview is ready, would you like us to email it to you?"
+                f"A new folder will be created under:\n{DEFAULT_WORK_ROOT}"
             )
         )
 
-        self._group = QButtonGroup(self)
-        self._no_email = QRadioButton("No — I'll copy files to a memory stick")
-        self._yes_email = QRadioButton("Yes — email the finished video")
-        self._no_email.setChecked(True)
-        self._group.addButton(self._no_email)
-        self._group.addButton(self._yes_email)
-        layout.addWidget(self._no_email)
-        layout.addWidget(self._yes_email)
+        self._custom_name = QLineEdit()
+        self._custom_name.setPlaceholderText("e.g. Bayeswatch")
+        self._custom_name.textChanged.connect(self._on_custom_edited)
+        layout.addWidget(self._custom_name)
+        layout.addWidget(body_label("Enter a Custom Session Name"))
 
-        email_box = QWidget()
-        email_layout = QVBoxLayout(email_box)
-        email_layout.setContentsMargins(24, 0, 0, 0)
-        email_layout.addWidget(body_label("Email address", word_wrap=False))
+        name_or_row = QHBoxLayout()
+        name_or_row.setContentsMargins(24, 8, 0, 8)
+        name_or_row.addWidget(body_label("Or", word_wrap=False))
+        name_or_row.addStretch()
+        layout.addLayout(name_or_row)
+
+        self._default_radio = QRadioButton("")
+        self._default_radio.setAutoExclusive(False)
+        self._default_radio.toggled.connect(self._on_default_toggled)
+        layout.addWidget(self._default_radio)
+
+        email_heading = heading_label("What is your email address?")
+        email_heading.setContentsMargins(0, 16, 0, 0)
+        layout.addWidget(email_heading)
+
         self._email = QLineEdit()
         self._email.setPlaceholderText("you@example.com")
-        email_layout.addWidget(self._email)
-        layout.addWidget(email_box)
-        self._email_box = email_box
+        self._email.textChanged.connect(self._on_email_edited)
+        layout.addWidget(self._email)
 
-        self._yes_email.toggled.connect(self._sync_email_fields)
-        self._sync_email_fields()
+        email_or_row = QHBoxLayout()
+        email_or_row.setContentsMargins(24, 8, 0, 8)
+        email_or_row.addWidget(body_label("Or", word_wrap=False))
+        email_or_row.addStretch()
+        layout.addLayout(email_or_row)
+
+        self._skip_email = QRadioButton(
+            "skip emailing me, I'll save the files I want manually"
+        )
+        self._skip_email.setAutoExclusive(False)
+        self._skip_email.toggled.connect(self._on_skip_email_toggled)
+        layout.addWidget(self._skip_email)
 
         layout.addStretch()
 
@@ -137,39 +155,107 @@ class DeliveryScreen(ScreenWidget):
         row.addWidget(cont)
         layout.addLayout(row)
 
-    def _sync_email_fields(self) -> None:
-        enabled = self._yes_email.isChecked()
-        self._email_box.setEnabled(enabled)
-        self._email.setEnabled(enabled)
+    def _on_custom_edited(self, text: str) -> None:
+        if text.strip():
+            self._default_radio.blockSignals(True)
+            self._default_radio.setChecked(False)
+            self._default_radio.blockSignals(False)
+
+    def _on_default_toggled(self, checked: bool) -> None:
+        if checked:
+            self._custom_name.blockSignals(True)
+            self._custom_name.clear()
+            self._custom_name.blockSignals(False)
+
+    def _on_email_edited(self, text: str) -> None:
+        if text.strip():
+            self._skip_email.blockSignals(True)
+            self._skip_email.setChecked(False)
+            self._skip_email.blockSignals(False)
+
+    def _on_skip_email_toggled(self, checked: bool) -> None:
+        if checked:
+            self._email.blockSignals(True)
+            self._email.clear()
+            self._email.blockSignals(False)
 
     def _go_back(self) -> None:
-        ctx = self.context()
-        if ctx is not None and ctx.entry_path == "record":
-            self.navigate.emit("A3")
-        elif ctx is not None and ctx.entry_path == "already_recorded":
-            self.navigate.emit("A3")
-        else:
-            self.navigate.emit("A1")
+        window = self.window()
+        if hasattr(window, "close_flow_to_home"):
+            window.close_flow_to_home()
+            return
+        self.navigate.emit("A1")
+
+    def _apply_session_name(self, ctx: SessionContext) -> bool:
+        if self._default_radio.isChecked() and not self._custom_name.text().strip():
+            if not (
+                ctx.session_name
+                and _looks_like_default_session_name(ctx.session_name)
+            ):
+                ctx.session_name = self._suggested_name
+            return True
+
+        name = self._custom_name.text().strip()
+        if not name:
+            QMessageBox.warning(
+                self,
+                "Name required",
+                "Enter a custom session name, or choose the default date and time.",
+            )
+            return False
+        if "/" in name or "\\" in name:
+            QMessageBox.warning(
+                self,
+                "Invalid name",
+                "Use a single folder name without path separators.",
+            )
+            return False
+        target = self.controller.work_root / name
+        if target.is_dir() and (target / PIAB_STATE_FILENAME).is_file():
+            if confirm_action(
+                self,
+                title="Existing session",
+                text=f"A session folder named {name!r} already exists.",
+                detail="Open it to resume instead of creating a new session?",
+            ):
+                self.navigate_session.emit(
+                    self.controller.resume_screen_for(target),
+                    target,
+                )
+            return False
+        ctx.session_name = name
+        return True
+
+    def _apply_delivery_email(self, ctx: SessionContext) -> bool:
+        if self._skip_email.isChecked() and not self._email.text().strip():
+            ctx.delivery_enabled = False
+            ctx.delivery_email = None
+            return True
+
+        email = self._email.text().strip()
+        if not email:
+            QMessageBox.warning(
+                self,
+                "Email required",
+                "Enter an email address, or choose to skip emailing.",
+            )
+            return False
+        ok, message = self.controller.validate_delivery_email(email)
+        if not ok:
+            QMessageBox.warning(self, "Invalid email", message)
+            return False
+        ctx.delivery_enabled = True
+        ctx.delivery_email = message
+        return True
 
     def _continue(self) -> None:
         ctx = self.context()
         if ctx is None:
             return
-
-        if self._yes_email.isChecked():
-            email = self._email.text().strip()
-            if not email:
-                QMessageBox.warning(self, "Email required", "Enter an email address.")
-                return
-            ok, message = self.controller.validate_delivery_email(email)
-            if not ok:
-                QMessageBox.warning(self, "Invalid email", message)
-                return
-            ctx.delivery_enabled = True
-            ctx.delivery_email = message
-        else:
-            ctx.delivery_enabled = False
-            ctx.delivery_email = None
+        if not self._apply_session_name(ctx):
+            return
+        if not self._apply_delivery_email(ctx):
+            return
 
         if ctx.entry_path == "record":
             self.navigate.emit("B1")
@@ -178,16 +264,47 @@ class DeliveryScreen(ScreenWidget):
         else:
             self.navigate.emit("A1")
 
+    def _restore_session_name(self, ctx: SessionContext) -> None:
+        if ctx.session_name:
+            name = ctx.session_name
+            if _looks_like_default_session_name(name):
+                self._suggested_name = name
+                self._default_radio.setText(f"Use default - date and time ({name})")
+                self._default_radio.setChecked(True)
+                self._custom_name.clear()
+            else:
+                self._suggested_name = self.controller.generate_session_name()
+                self._default_radio.setText(
+                    f"Use default - date and time ({self._suggested_name})"
+                )
+                self._default_radio.setChecked(False)
+                self._custom_name.setText(name)
+        else:
+            self._suggested_name = self.controller.generate_session_name()
+            self._default_radio.setText(
+                f"Use default - date and time ({self._suggested_name})"
+            )
+            self._default_radio.setChecked(False)
+            self._custom_name.clear()
+
+    def _restore_delivery_email(self, ctx: SessionContext) -> None:
+        if ctx.delivery_enabled and ctx.delivery_email:
+            self._skip_email.setChecked(False)
+            self._email.setText(ctx.delivery_email)
+        elif ctx.session_name and not ctx.delivery_enabled:
+            self._email.clear()
+            self._skip_email.setChecked(True)
+        else:
+            self._email.clear()
+            self._skip_email.setChecked(False)
+
     def on_enter(self) -> None:
         ctx = self.context()
         if ctx is None:
             return
-        if ctx.delivery_enabled and ctx.delivery_email:
-            self._yes_email.setChecked(True)
-            self._email.setText(ctx.delivery_email)
-        else:
-            self._no_email.setChecked(True)
-        self._sync_email_fields()
+        self._restore_session_name(ctx)
+        self._restore_delivery_email(ctx)
+        QTimer.singleShot(0, self._custom_name.setFocus)
 
 
 class SourceLocationScreen(ScreenWidget):
@@ -449,10 +566,7 @@ class ConfirmSourceScreen(ScreenWidget):
         ctx = self.context()
         if ctx is None:
             return
-        if ctx.source_mode == "special":
-            self.navigate.emit("C3")
-        else:
-            self.navigate.emit("C2b")
+        self.navigate.emit("C3")
 
     def _cluster_changed(self, index: int) -> None:
         if self._loading_cluster or index < 0:
@@ -540,147 +654,6 @@ class ConfirmSourceScreen(ScreenWidget):
         self._render_scan(ctx.scan_data)
 
 
-class SessionNameScreen(ScreenWidget):
-    """C2b — choose session folder name (default source mode only)."""
-
-    screen_id = "C2b"
-
-    def __init__(self, controller, parent=None) -> None:
-        super().__init__(controller, parent)
-        self._suggested_name = ""
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-
-        layout.addWidget(heading_label("Name session folder"))
-        layout.addWidget(
-            body_label(
-                f"A new folder will be created under:\n{DEFAULT_WORK_ROOT}"
-            )
-        )
-
-        self._custom_name = QLineEdit()
-        self._custom_name.setPlaceholderText("e.g. Bayeswatch")
-        self._custom_name.textChanged.connect(self._on_custom_edited)
-        layout.addWidget(self._custom_name)
-        layout.addWidget(body_label("Enter a Custom Session Name"))
-
-        or_row = QHBoxLayout()
-        or_row.setContentsMargins(24, 8, 0, 8)
-        or_row.addWidget(body_label("Or", word_wrap=False))
-        or_row.addStretch()
-        layout.addLayout(or_row)
-
-        self._default_radio = QRadioButton("")
-        self._default_radio.setAutoExclusive(False)
-        self._default_radio.toggled.connect(self._on_default_toggled)
-        layout.addWidget(self._default_radio)
-        layout.addStretch()
-
-        row = QHBoxLayout()
-        back = QPushButton("Back")
-        back.clicked.connect(self._go_back)
-        row.addWidget(back)
-        row.addStretch()
-        cont = QPushButton("Continue")
-        cont.setDefault(True)
-        cont.setMinimumHeight(40)
-        cont.clicked.connect(self._continue)
-        row.addWidget(cont)
-        layout.addLayout(row)
-
-    def _go_back(self) -> None:
-        ctx = self.context()
-        if ctx is not None and ctx.entry_path == "record":
-            self.navigate.emit("B5")
-        else:
-            self.navigate.emit("C2a")
-
-    def _continue(self) -> None:
-        ctx = self.context()
-        if ctx is None:
-            return
-
-        if self._default_radio.isChecked() and not self._custom_name.text().strip():
-            if not (
-                ctx.session_name
-                and _looks_like_default_session_name(ctx.session_name)
-            ):
-                ctx.session_name = self._suggested_name
-            self.navigate.emit("C3")
-            return
-
-        name = self._custom_name.text().strip()
-        if not name:
-            QMessageBox.warning(
-                self,
-                "Name required",
-                "Enter a custom session name, or choose the default date and time.",
-            )
-            return
-        if "/" in name or "\\" in name:
-            QMessageBox.warning(
-                self,
-                "Invalid name",
-                "Use a single folder name without path separators.",
-            )
-            return
-        target = self.controller.work_root / name
-        if target.is_dir() and (target / PIAB_STATE_FILENAME).is_file():
-            if confirm_action(
-                self,
-                title="Existing session",
-                text=f"A session folder named {name!r} already exists.",
-                detail="Open it to resume instead of creating a new session?",
-            ):
-                self.navigate_session.emit(
-                    self.controller.resume_screen_for(target),
-                    target,
-                )
-            return
-        ctx.session_name = name
-
-        self.navigate.emit("C3")
-
-    def _on_custom_edited(self, text: str) -> None:
-        if text.strip():
-            self._default_radio.blockSignals(True)
-            self._default_radio.setChecked(False)
-            self._default_radio.blockSignals(False)
-
-    def _on_default_toggled(self, checked: bool) -> None:
-        if checked:
-            self._custom_name.blockSignals(True)
-            self._custom_name.clear()
-            self._custom_name.blockSignals(False)
-
-    def on_enter(self) -> None:
-        ctx = self.context()
-        if ctx is not None and ctx.session_name:
-            name = ctx.session_name
-            if _looks_like_default_session_name(name):
-                self._suggested_name = name
-                self._default_radio.setText(f"Use default - date and time ({name})")
-                self._default_radio.setChecked(True)
-                self._custom_name.clear()
-            else:
-                self._suggested_name = self.controller.generate_session_name()
-                self._default_radio.setText(
-                    f"Use default - date and time ({self._suggested_name})"
-                )
-                self._default_radio.setChecked(False)
-                self._custom_name.setText(name)
-        else:
-            self._suggested_name = self.controller.generate_session_name()
-            self._default_radio.setText(
-                f"Use default - date and time ({self._suggested_name})"
-            )
-            self._default_radio.setChecked(False)
-            self._custom_name.clear()
-
-        QTimer.singleShot(0, self._custom_name.setFocus)
-
-
 class CreateSessionScreen(ScreenWidget):
     """C3 — create working folder and podcast-in-a-box.json."""
 
@@ -714,10 +687,10 @@ class CreateSessionScreen(ScreenWidget):
 
     def _go_back(self) -> None:
         ctx = self.context()
-        if ctx is not None and ctx.source_mode == "special":
-            self.navigate.emit("C2a")
-        else:
-            self.navigate.emit("C2b")
+        if ctx is not None and ctx.entry_path == "record":
+            self.navigate.emit("B3")
+            return
+        self.navigate.emit("C2a")
 
     def on_enter(self) -> None:
         ctx = self.context()
@@ -780,7 +753,7 @@ class CreateSessionScreen(ScreenWidget):
         if ctx is not None:
             ctx.session_folder = Path(str(folder))
         self._back.setEnabled(True)
-        self.navigate_session.emit("C4", folder)
+        self.navigate_session.emit("D1", folder)
 
     def _on_fail(self, message: str) -> None:
         self._headline.setText("Could not create session")
@@ -798,39 +771,3 @@ class CreateSessionScreen(ScreenWidget):
             ):
                 ctx.allow_overwrite = True
                 self.on_enter()
-
-
-class SessionReadyScreen(ScreenWidget):
-    """C4 — show session path before labeling."""
-
-    screen_id = "C4"
-
-    def __init__(self, controller, parent=None) -> None:
-        super().__init__(controller, parent)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-
-        layout.addWidget(heading_label("Session ready"))
-
-        layout.addWidget(
-            body_label(
-                "Your autocut session is set up. Next you'll label camera and microphone files."
-            )
-        )
-
-        self._banner = PathBanner()
-        layout.addWidget(self._banner)
-
-        layout.addStretch()
-
-        cont = QPushButton("Continue to labeling")
-        cont.setMinimumHeight(44)
-        cont.setDefault(True)
-        cont.clicked.connect(lambda: self.navigate.emit("D1"))
-        layout.addWidget(cont)
-
-    def on_enter(self) -> None:
-        ctx = self.context()
-        folder = ctx.session_folder if ctx else None
-        self._banner.set_path(folder)

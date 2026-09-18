@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.controller.paths import ASSETS_DIR, DEFAULT_SCAN_ROOT
+from app.controller.recording import recording_warmup_phrases_html
 from app.gui.dialogs import confirm_action
 from app.gui.recording_alarm import (
     RECORDING_ALARM_URGENT_MS,
@@ -169,9 +170,18 @@ class VmixPresetScreen(_StatusScreen):
 
     def on_enter(self) -> None:
         self._enter_token += 1
-        self._stay_after_success = False
+        ctx = self.context()
+        stay = bool(ctx is not None and ctx.skip_vmix_auto_advance)
+        if ctx is not None:
+            ctx.skip_vmix_auto_advance = False
+        self._stay_after_success = stay
         self._retry.hide()
         self._next.hide()
+        if stay:
+            self._detail.setText("vMix preset is ready.")
+            self._next.show()
+            self._next.setEnabled(True)
+            return
         self._set_busy("Opening the PIAB vMix preset…")
         self._run(self.controller.open_vmix_preset_step, on_ok=self._on_ok)
 
@@ -308,7 +318,10 @@ class CameraSetupScreen(ScreenWidget):
         raise_app_window(self)
 
     def _go_back(self) -> None:
-        self.navigate.emit("C1")
+        ctx = self.context()
+        if ctx is not None:
+            ctx.skip_vmix_auto_advance = True
+        self.navigate.emit("B2")
 
 
 _RECORDING_OK_STYLE = "color: #4ade80; font-size: 18px; font-weight: 600;"
@@ -356,6 +369,11 @@ class RecordingScreen(ScreenWidget):
         self._warmup_label.setAlignment(Qt.AlignCenter)
         self._warmup_label.setStyleSheet("font-size: 32px; font-weight: 600;")
         warmup_layout.addWidget(self._warmup_label)
+        warmup_layout.addSpacing(36)
+        self._warmup_phrases = body_label("")
+        self._warmup_phrases.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self._warmup_phrases.setTextFormat(Qt.TextFormat.RichText)
+        warmup_layout.addWidget(self._warmup_phrases)
         warmup_layout.addStretch()
         layout.addWidget(self._warmup_page, stretch=1)
 
@@ -428,6 +446,7 @@ class RecordingScreen(ScreenWidget):
         self._show_warmup()
         try:
             self._instructions.setText(self.controller.recording_instructions())
+            self._warmup_phrases.setText(recording_warmup_phrases_html())
         except Exception as exc:
             self._show_recording()
             self._set_status(str(exc), error=True)
@@ -628,9 +647,15 @@ class RecordingScreen(ScreenWidget):
         start_callable_worker(
             self,
             self.controller.finish_recording,
-            on_ok=lambda _job: self.navigate.emit("B5"),
+            on_ok=lambda _job: self._continue_to_autocut(),
             on_fail=lambda msg: QMessageBox.warning(self, "Stop failed", msg),
         )
+
+    def _continue_to_autocut(self) -> None:
+        ctx = self.context()
+        if ctx is not None:
+            ctx.source_mode = "default"
+        self.navigate.emit("C3")
 
     def _confirm_back(self) -> None:
         if self._recording_started:
@@ -642,36 +667,6 @@ class RecordingScreen(ScreenWidget):
             ):
                 return
         self.navigate.emit("B3")
-
-
-class RecordingCompleteScreen(ScreenWidget):
-    screen_id = "B5"
-
-    def __init__(self, controller, parent=None) -> None:
-        super().__init__(controller, parent)
-        layout = QVBoxLayout(self)
-        layout.addWidget(heading_label("Recording complete"))
-        self._blurb = body_label(
-            f"Your MultiCorder files are in:\n{DEFAULT_SCAN_ROOT}"
-        )
-        layout.addWidget(self._blurb)
-        layout.addStretch()
-
-        autocut = QPushButton("Continue to autocut")
-        autocut.setMinimumHeight(44)
-        autocut.clicked.connect(self._continue_autocut)
-        layout.addWidget(autocut)
-
-        stop = QPushButton("Stop — save files only")
-        stop.setMinimumHeight(44)
-        stop.clicked.connect(lambda: self.navigate.emit("B6"))
-        layout.addWidget(stop)
-
-    def _continue_autocut(self) -> None:
-        ctx = self.context()
-        if ctx is not None:
-            ctx.source_mode = "default"
-        self.navigate.emit("C2b")
 
 
 class RecordingSavedScreen(ScreenWidget):

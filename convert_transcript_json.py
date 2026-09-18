@@ -43,6 +43,7 @@ Example:
   python convert_transcript_json.py input.json -o outputs/segment_1_transcript_simplified.json
   python convert_transcript_json.py input.json --drop-nonspeech
   python convert_transcript_json.py detail.json --no-split-sentences
+  python convert_transcript_json.py detail.json --no-promote-extra-speakers
 """
 
 import argparse
@@ -50,7 +51,7 @@ import json
 import os
 import re
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 # Word tokens ending a sentence (after strip); excludes common abbreviations.
 _ABBREV_ENDINGS = frozenset(
@@ -80,6 +81,14 @@ MIN_UTTERANCE_DURATION_SEC = 0.02
 # This dramatically increases "true sentence-level" rows, which improves cut opportunities.
 PAUSE_SPLIT_GAP_SEC = 0.65
 PAUSE_SPLIT_MIN_WORDS = 6
+
+# ElevenLabs sometimes labels a room voice as speaker_1 and the real Host/Guest as
+# speaker_2 / speaker_3. Promote those extra clusters into the 0/1 camera slots when
+# they clearly have more speech than a primary slot.
+PRIMARY_SPEAKER_IDS = (0, 1)
+EXTRA_SPEAKER_IDS = (2, 3)
+PROMOTE_EXTRA_RATIO = 2.0
+PROMOTE_EXTRA_MIN_SEC = 2.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -135,6 +144,14 @@ def parse_args() -> argparse.Namespace:
             "Swap speaker_id 0 and 1 in every output row after conversion. Use when "
             "ElevenLabs diarization labeled the host as speaker_1 and the guest as "
             "speaker_0 (Ben must end up as speaker_id 0 for podcast autocut)."
+        ),
+    )
+    parser.add_argument(
+        "--no-promote-extra-speakers",
+        action="store_true",
+        help=(
+            "Do not swap speaker_2 / speaker_3 into the speaker_0 / speaker_1 slots "
+            "even when an extra cluster has much more speech than a primary slot."
         ),
     )
     return parser.parse_args()
@@ -503,18 +520,169 @@ def convert_segments(
     return output, speaker_map
 
 
+def _row_speech_sec(row: Mapping) -> float:
+    """Spoken duration for a simplified row (word timings when present)."""
+    words = row.get("words")
+    if isinstance(words, list) and words:
+        total = 0.0
+        for word in words:
+            if not isinstance(word, dict):
+                continue
+            start = _word_start_time(word)
+            end = _word_end_time(word)
+            if start is None or end is None:
+                continue
+            total += max(0.0, end - start)
+        if total > 0.0:
+            return total
+    try:
+        start = float(row.get("start"))
+        end = float(row.get("end"))
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, end - start)
+
+
+def speaker_speech_seconds(output: Mapping[str, Dict]) -> Dict[int, float]:
+    """Total spoken seconds keyed by integer speaker_id."""
+    totals: Dict[int, float] = {}
+    for row in output.values():
+        if not isinstance(row, dict):
+            continue
+        raw_sid = row.get("speaker_id")
+        if raw_sid is None:
+            continue
+        try:
+            sid = int(raw_sid)
+        except (TypeError, ValueError):
+            continue
+        totals[sid] = totals.get(sid, 0.0) + _row_speech_sec(row)
+    return totals
+
+
+def extra_speaker_is_lot_more(
+    extra_sec: float,
+    primary_sec: float,
+    *,
+    ratio: float = PROMOTE_EXTRA_RATIO,
+    min_extra_sec: float = PROMOTE_EXTRA_MIN_SEC,
+) -> bool:
+    """True when extra speech clearly dominates a primary 0/1 slot."""
+    if extra_sec < min_extra_sec:
+        return False
+    if primary_sec <= 0.0:
+        return True
+    return extra_sec >= primary_sec * ratio
+
+
+def extra_speaker_promotion_swaps(
+    speech_sec: Mapping[int, float],
+    *,
+    extra_ids: Sequence[int] = EXTRA_SPEAKER_IDS,
+    primary_ids: Sequence[int] = PRIMARY_SPEAKER_IDS,
+    ratio: float = PROMOTE_EXTRA_RATIO,
+    min_extra_sec: float = PROMOTE_EXTRA_MIN_SEC,
+) -> List[Tuple[int, int]]:
+    """
+    Pairwise (extra_id, primary_id) swaps so a dominant speaker_2 / speaker_3
+    takes the Host or Guest slot it out-talked.
+
+    Extras are considered largest-first. After each swap, durations are updated
+    so a second extra can still claim the remaining weak slot.
+    """
+    sec = {int(sid): float(duration) for sid, duration in speech_sec.items()}
+    extras = [int(eid) for eid in extra_ids if sec.get(int(eid), 0.0) > 0.0]
+    extras.sort(key=lambda eid: sec.get(eid, 0.0), reverse=True)
+    primary_list = [int(pid) for pid in primary_ids]
+
+    swaps: List[Tuple[int, int]] = []
+    for extra in extras:
+        extra_sec = sec.get(extra, 0.0)
+        dominated: List[Tuple[float, int]] = []
+        for primary in primary_list:
+            primary_sec = sec.get(primary, 0.0)
+            if extra_speaker_is_lot_more(
+                extra_sec,
+                primary_sec,
+                ratio=ratio,
+                min_extra_sec=min_extra_sec,
+            ):
+                dominated.append((primary_sec, primary))
+        if not dominated:
+            continue
+        dominated.sort()
+        slot = dominated[0][1]
+        swaps.append((extra, slot))
+        sec[extra], sec[slot] = sec.get(slot, 0.0), extra_sec
+    return swaps
+
+
+def apply_speaker_id_swaps(
+    output: Dict[str, Dict],
+    swaps: Sequence[Tuple[int, int]],
+) -> int:
+    """Apply sequential pairwise speaker_id swaps. Returns rows whose id changed."""
+    if not swaps:
+        return 0
+    original = {key: row.get("speaker_id") for key, row in output.items()}
+    for left, right in swaps:
+        if left == right:
+            continue
+        for row in output.values():
+            sid = row.get("speaker_id")
+            if sid == left:
+                row["speaker_id"] = right
+            elif sid == right:
+                row["speaker_id"] = left
+    return sum(
+        1
+        for key, row in output.items()
+        if row.get("speaker_id") != original[key]
+    )
+
+
+def promote_extra_speakers_in_output(
+    output: Dict[str, Dict],
+    *,
+    ratio: float = PROMOTE_EXTRA_RATIO,
+    min_extra_sec: float = PROMOTE_EXTRA_MIN_SEC,
+) -> List[Tuple[int, int]]:
+    """
+    If speaker_2 or speaker_3 has a lot more speech than speaker_0 or speaker_1,
+    swap those ids in place so the real Host/Guest occupy the close-up slots.
+    Returns the swaps that were applied.
+    """
+    speech_sec = speaker_speech_seconds(output)
+    if not any(speech_sec.get(eid, 0.0) > 0.0 for eid in EXTRA_SPEAKER_IDS):
+        return []
+    swaps = extra_speaker_promotion_swaps(
+        speech_sec,
+        ratio=ratio,
+        min_extra_sec=min_extra_sec,
+    )
+    if swaps:
+        apply_speaker_id_swaps(output, swaps)
+    return swaps
+
+
+def format_promotion_message(
+    swaps: Sequence[Tuple[int, int]],
+    before_sec: Mapping[int, float],
+) -> str:
+    parts = []
+    for extra, slot in swaps:
+        extra_sec = float(before_sec.get(extra, 0.0))
+        slot_sec = float(before_sec.get(slot, 0.0))
+        parts.append(
+            f"speaker_{extra} ({extra_sec:.1f}s) -> speaker_{slot} "
+            f"({slot_sec:.1f}s)"
+        )
+    return "Promoted extra diarization cluster(s): " + "; ".join(parts) + "."
+
+
 def swap_speaker_ids_in_output(output: Dict[str, Dict]) -> int:
     """Swap speaker_id 0 <-> 1 in place. Returns number of rows touched."""
-    touched = 0
-    for row in output.values():
-        sid = row.get("speaker_id")
-        if sid == 0:
-            row["speaker_id"] = 1
-            touched += 1
-        elif sid == 1:
-            row["speaker_id"] = 0
-            touched += 1
-    return touched
+    return apply_speaker_id_swaps(output, [(0, 1)])
 
 
 def main() -> int:
@@ -537,6 +705,12 @@ def main() -> int:
         pause_split_gap_sec=float(args.pause_split_gap_sec),
         pause_split_min_words=int(args.pause_split_min_words),
     )
+
+    if not args.no_promote_extra_speakers:
+        before_sec = speaker_speech_seconds(converted)
+        swaps = promote_extra_speakers_in_output(converted)
+        if swaps:
+            print(format_promotion_message(swaps, before_sec))
 
     if args.swap_speaker_ids:
         n = swap_speaker_ids_in_output(converted)
