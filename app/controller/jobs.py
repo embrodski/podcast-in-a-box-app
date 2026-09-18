@@ -11,14 +11,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from app.controller.paths import ensure_scripts_path
 from app.controller.types import AbortResult, Job, JobKind, JobStatus
+
+ensure_scripts_path()
+from win_hidden_console import hidden_console_kwargs, install_hidden_console
+
+install_hidden_console()
 
 
 @dataclass
 class _RunningJob:
     job: Job
     process: subprocess.Popen | None = None
-    on_complete: Callable[[Job], None] | None = None
     abort_hook: Callable[[], None] | None = None
     reported: bool = False
     _wait_thread: threading.Thread | None = field(default=None, repr=False)
@@ -39,6 +44,7 @@ def kill_process_tree(pid: int | None) -> None:
             capture_output=True,
             text=True,
             check=False,
+            **hidden_console_kwargs(),
         )
         return
 
@@ -159,7 +165,6 @@ class JobRunner:
         *,
         cwd: Path,
         session_folder: Path | None = None,
-        on_complete: Callable[[Job], None] | None = None,
     ) -> Job:
         if kind in FAST_PREVIEW_KINDS:
             with self._lock:
@@ -181,6 +186,7 @@ class JobRunner:
             "cwd": str(cwd),
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
+            **hidden_console_kwargs(),
         }
         if sys.platform != "win32":
             popen_kwargs["start_new_session"] = True
@@ -192,7 +198,7 @@ class JobRunner:
             status="running",
             pid=process.pid,
         )
-        entry = _RunningJob(job=job, process=process, on_complete=on_complete)
+        entry = _RunningJob(job=job, process=process)
         with self._lock:
             self._jobs[job.id] = entry
         self._spawn_waiter(entry)
@@ -225,29 +231,24 @@ class JobRunner:
     def _finalize_subprocess(self, entry: _RunningJob, returncode: int | None) -> None:
         with self._lock:
             self._apply_returncode_locked(entry, returncode)
-        if entry.on_complete:
-            entry.on_complete(entry.job)
 
     def poll(self) -> list[Job]:
         finished: list[Job] = []
-        callbacks: list[tuple[Callable[[Job], None], Job]] = []
         with self._lock:
+            stale_ids: list[str] = []
             for entry in self._jobs.values():
                 proc = entry.process
                 if entry.job.status == "running" and proc is not None:
                     code = proc.poll()
                     if code is not None:
                         self._apply_returncode_locked(entry, code)
-                        if entry.on_complete:
-                            callbacks.append((entry.on_complete, entry.job))
-                if (
-                    entry.job.status in {"completed", "failed", "aborted"}
-                    and not entry.reported
-                ):
-                    entry.reported = True
-                    finished.append(entry.job)
-        for callback, job in callbacks:
-            callback(job)
+                if entry.job.status in {"completed", "failed", "aborted"}:
+                    if not entry.reported:
+                        entry.reported = True
+                        finished.append(entry.job)
+                    stale_ids.append(entry.job.id)
+            for job_id in stale_ids:
+                self._jobs.pop(job_id, None)
         return finished
 
     def abort_job(self, job_id: str, *, confirmed: bool) -> AbortResult:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout
 
 from app.gui.failure_context import clear_failure_context
@@ -15,13 +13,6 @@ from app.gui.widgets.selectable_text import (
     selectable_plain_text,
     set_plain_lines,
 )
-
-
-def _session_folder(screen: ScreenWidget) -> Path | None:
-    ctx = screen.context()
-    if ctx is None or ctx.session_folder is None:
-        return None
-    return ctx.session_folder
 
 
 class ErrorScreen(ScreenWidget):
@@ -73,7 +64,7 @@ class ErrorScreen(ScreenWidget):
 
     def on_enter(self) -> None:
         ctx = self.context()
-        folder = _session_folder(self)
+        folder = self.session_folder()
         self._banner.set_path(folder)
 
         state = None

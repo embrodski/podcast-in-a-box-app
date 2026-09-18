@@ -10,6 +10,9 @@ from pathlib import Path
 from episode_segments import podcast_dsl_segments_args, segments_path
 from harness_episode_lib import REPO_ROOT
 from harness_overwrite_guard import refuse_overwrite
+from win_hidden_console import install_hidden_console
+
+install_hidden_console()
 
 
 def run_cmd(cmd: list[str], *, cwd: Path | None = None, env: dict | None = None) -> None:

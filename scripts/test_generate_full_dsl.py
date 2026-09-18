@@ -2,10 +2,13 @@
 """Regression tests for interview DSL generation."""
 
 from pathlib import Path
+import math
+import struct
 import sys
 import tempfile
 import unittest
 import json
+import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -157,6 +160,8 @@ class StartEndPhraseTests(unittest.TestCase):
         self.assertAlmostEqual(cut.content_start_abs, 12.5)
         # Jolly starts 2.5s into row 1 -> slice_start 2.5; !opening supplies the 1s preroll.
         self.assertAlmostEqual(cut.first_slice_start or -1.0, 2.5)
+        self.assertAlmostEqual(cut.opening_sec, 1.0)
+        self.assertFalse(cut.opening_from_quietest)
 
     def test_start_phrase_ignores_case_and_punctuation(self) -> None:
         cut = _apply_start_phrase(
@@ -166,6 +171,36 @@ class StartEndPhraseTests(unittest.TestCase):
         )
         self.assertEqual(cut.next_word_text, "jolly")
         self.assertEqual(cut.host_speaker_id, 0)
+
+    def test_start_phrase_uses_quietest_in_preroll_window(self) -> None:
+        seen: list[tuple[float, float]] = []
+
+        def _quietest(lo: float, hi: float) -> float:
+            seen.append((lo, hi))
+            return 12.15
+
+        cut = _apply_start_phrase(
+            self.rows,
+            "Hut of brown, now sit down.",
+            preroll_sec=1.0,
+            quietest_fn=_quietest,
+        )
+        self.assertEqual(len(seen), 1)
+        self.assertAlmostEqual(seen[0][0], 11.5)
+        self.assertAlmostEqual(seen[0][1], 12.5)
+        self.assertAlmostEqual(cut.content_start_abs, 12.5)
+        self.assertAlmostEqual(cut.opening_sec, 0.35)
+        self.assertTrue(cut.opening_from_quietest)
+
+    def test_start_phrase_quietest_none_falls_back_to_preroll(self) -> None:
+        cut = _apply_start_phrase(
+            self.rows,
+            "Hut of brown, now sit down.",
+            preroll_sec=1.0,
+            quietest_fn=lambda lo, hi: None,
+        )
+        self.assertAlmostEqual(cut.opening_sec, 1.0)
+        self.assertFalse(cut.opening_from_quietest)
 
     _TRIGGER = "I solemnly swear I'm up to no good"
     _COUNTDOWN = ["five", "four", "three", "two"]
@@ -608,6 +643,76 @@ class StartEndPhraseTests(unittest.TestCase):
         # Last content word ends 11.0; end phrase starts 14.0 — full 1s postroll applies.
         self.assertAlmostEqual(cut.content_end_abs, 12.0)
         self.assertAlmostEqual(cut.last_slice_end or -1.0, 2.0)
+        self.assertFalse(cut.end_from_quietest)
+
+    def test_end_phrase_uses_quietest_in_postroll_window(self) -> None:
+        rows = [
+            Row(
+                idx=0,
+                start=10.0,
+                end=20.0,
+                text="Content ends here. Be excellent to each other and party on dudes.",
+                speaker_id=0,
+                speaker_name="Host",
+                words=_words(
+                    ("Content", 10.0, 10.3),
+                    ("ends", 10.4, 10.6),
+                    ("here.", 10.7, 11.0),
+                    ("Be", 14.0, 14.1),
+                    ("excellent", 14.2, 14.5),
+                    ("to", 14.6, 14.7),
+                    ("each", 14.8, 14.9),
+                    ("other", 15.0, 15.2),
+                    ("and", 15.3, 15.4),
+                    ("party", 15.5, 15.7),
+                    ("on", 15.8, 15.9),
+                    ("dudes", 16.0, 16.3),
+                ),
+            ),
+        ]
+        cut = _apply_end_phrase(
+            rows,
+            "Be excellent to each other and party on dudes",
+            postroll_sec=1.0,
+            quietest_fn=lambda lo, hi: 11.35,
+        )
+        self.assertAlmostEqual(cut.content_end_abs, 11.35)
+        self.assertAlmostEqual(cut.last_slice_end or -1.0, 1.35)
+        self.assertTrue(cut.end_from_quietest)
+
+    def test_end_phrase_quietest_none_falls_back_to_postroll(self) -> None:
+        rows = [
+            Row(
+                idx=0,
+                start=10.0,
+                end=20.0,
+                text="Content ends here. Be excellent to each other and party on dudes.",
+                speaker_id=0,
+                speaker_name="Host",
+                words=_words(
+                    ("Content", 10.0, 10.3),
+                    ("ends", 10.4, 10.6),
+                    ("here.", 10.7, 11.0),
+                    ("Be", 14.0, 14.1),
+                    ("excellent", 14.2, 14.5),
+                    ("to", 14.6, 14.7),
+                    ("each", 14.8, 14.9),
+                    ("other", 15.0, 15.2),
+                    ("and", 15.3, 15.4),
+                    ("party", 15.5, 15.7),
+                    ("on", 15.8, 15.9),
+                    ("dudes", 16.0, 16.3),
+                ),
+            ),
+        ]
+        cut = _apply_end_phrase(
+            rows,
+            "Be excellent to each other and party on dudes",
+            postroll_sec=1.0,
+            quietest_fn=lambda lo, hi: None,
+        )
+        self.assertAlmostEqual(cut.content_end_abs, 12.0)
+        self.assertFalse(cut.end_from_quietest)
 
     def test_latest_end_phrase_wins_among_alternates(self) -> None:
         started = _apply_start_phrase(
@@ -796,7 +901,7 @@ class PauseUnpauseTests(unittest.TestCase):
 
         pieces, notes = _apply_pause_unpause_to_pieces(
             self.rows,
-            pause_phrase="Computer Freeze Program.",
+            pause_phrases=["Computer Freeze Program."],
             unpause_phrases=["Computer Resume Program", "Computer Unfreeze Program"],
             preroll_sec=0.25,
             postroll_sec=0.7,
@@ -813,6 +918,44 @@ class PauseUnpauseTests(unittest.TestCase):
         seam_pieces = [p for p in pieces if p.seam_after_pause]
         self.assertEqual(len(seam_pieces), 1)
         self.assertIn("Welcome", seam_pieces[0].row.text)
+
+    def test_alternate_pause_phrase_also_matches(self) -> None:
+        from generate_full_dsl import _apply_pause_unpause_to_pieces
+
+        rows = [
+            self.rows[0],
+            Row(
+                idx=1,
+                start=5.0,
+                end=12.0,
+                text="Computer Pause Program. Secret stuff here.",
+                speaker_id=0,
+                speaker_name="Host",
+                words=_words(
+                    ("Computer", 5.0, 5.4),
+                    ("Pause", 5.5, 5.9),
+                    ("Program.", 6.0, 6.5),
+                    ("Secret", 7.0, 7.4),
+                    ("stuff", 7.5, 7.9),
+                    ("here.", 8.0, 8.4),
+                ),
+            ),
+            self.rows[2],
+        ]
+        pieces, notes = _apply_pause_unpause_to_pieces(
+            rows,
+            pause_phrases=["Computer Freeze Program.", "Computer Pause Program"],
+            unpause_phrases=["Computer Resume Program", "Computer Unfreeze Program"],
+            preroll_sec=0.25,
+            postroll_sec=0.7,
+            first_slice_start=None,
+            last_slice_end=None,
+        )
+        self.assertTrue(any("Pause" in n for n in notes))
+        texts = " ".join(p.row.text for p in pieces)
+        self.assertIn("Hello", texts)
+        self.assertIn("Welcome", texts)
+        self.assertTrue(any(p.seam_after_pause for p in pieces))
 
     def test_dsl_emits_pause_flag_at_seam(self) -> None:
         transcript = {
@@ -916,7 +1059,7 @@ class PauseUnpauseTests(unittest.TestCase):
         ]
         pieces, _notes = _apply_pause_unpause_to_pieces(
             rows,
-            pause_phrase="Computer Freeze Program.",
+            pause_phrases=["Computer Freeze Program."],
             unpause_phrases=["Computer Resume Program"],
             preroll_sec=0.25,
             postroll_sec=0.7,
@@ -980,7 +1123,7 @@ class PauseUnpauseTests(unittest.TestCase):
         ]
         pieces, _notes = _apply_pause_unpause_to_pieces(
             rows,
-            pause_phrase="Computer Freeze Program.",
+            pause_phrases=["Computer Freeze Program."],
             unpause_phrases=["Computer Resume Program"],
             preroll_sec=0.25,
             postroll_sec=0.7,
@@ -1038,7 +1181,7 @@ class PauseUnpauseTests(unittest.TestCase):
         ]
         pieces, _notes = _apply_pause_unpause_to_pieces(
             rows,
-            pause_phrase="Computer Freeze Program.",
+            pause_phrases=["Computer Freeze Program."],
             unpause_phrases=["Computer Resume Program"],
             preroll_sec=0.25,
             postroll_sec=0.7,
@@ -1049,6 +1192,145 @@ class PauseUnpauseTests(unittest.TestCase):
         self.assertEqual(len(pre_pause), 1)
         # now. ends 2468.541; +0.25s preroll => slice_end 8.791 from row start 2460.0
         self.assertAlmostEqual(pre_pause[0].slice_end or -1.0, 8.791)
+
+    def test_pause_preroll_clamps_to_cue_when_gap_is_shorter(self) -> None:
+        from generate_full_dsl import _apply_pause_unpause_to_pieces
+
+        rows = [
+            Row(
+                idx=0,
+                start=0.0,
+                end=2.0,
+                text="now.",
+                speaker_id=1,
+                speaker_name="Guest",
+                words=_words(("now.", 0.0, 0.80)),
+            ),
+            Row(
+                idx=1,
+                start=1.0,
+                end=3.0,
+                text="Computer Freeze Program.",
+                speaker_id=0,
+                speaker_name="Host",
+                words=_words(
+                    ("Computer", 1.00, 1.30),
+                    ("Freeze", 1.40, 1.70),
+                    ("Program.", 1.80, 2.20),
+                ),
+            ),
+            Row(
+                idx=2,
+                start=4.0,
+                end=6.0,
+                text="Computer Resume Program. Okay.",
+                speaker_id=0,
+                speaker_name="Host",
+                words=_words(
+                    ("Computer", 4.0, 4.2),
+                    ("Resume", 4.3, 4.5),
+                    ("Program.", 4.6, 4.9),
+                    ("Okay.", 5.5, 5.8),
+                ),
+            ),
+        ]
+        pieces, _notes = _apply_pause_unpause_to_pieces(
+            rows,
+            pause_phrases=["Computer Freeze Program."],
+            unpause_phrases=["Computer Resume Program"],
+            preroll_sec=0.25,
+            postroll_sec=0.7,
+            first_slice_start=None,
+            last_slice_end=None,
+        )
+        pre_pause = [p for p in pieces if p.row.idx == 0]
+        self.assertEqual(len(pre_pause), 1)
+        self.assertNotIn(1, [p.row.idx for p in pieces])
+        # Gap is 0.20s (0.80 → 1.00). Fixed 0.25s preroll would enter "Computer".
+        self.assertAlmostEqual(pre_pause[0].slice_end or -1.0, 1.00)
+
+    def test_pause_cut_uses_quietest_point_in_gap(self) -> None:
+        from generate_full_dsl import _apply_pause_unpause_to_pieces
+
+        rows = [
+            Row(
+                idx=0,
+                start=0.0,
+                end=1.0,
+                text="now.",
+                speaker_id=1,
+                speaker_name="Guest",
+                words=_words(("now.", 0.0, 1.00)),
+            ),
+            Row(
+                idx=1,
+                start=1.5,
+                end=3.0,
+                text="Computer Freeze Program.",
+                speaker_id=0,
+                speaker_name="Host",
+                words=_words(
+                    ("Computer", 1.50, 1.80),
+                    ("Freeze", 1.90, 2.10),
+                    ("Program.", 2.20, 2.50),
+                ),
+            ),
+            Row(
+                idx=2,
+                start=4.0,
+                end=6.0,
+                text="Computer Resume Program. Okay.",
+                speaker_id=0,
+                speaker_name="Host",
+                words=_words(
+                    ("Computer", 4.0, 4.2),
+                    ("Resume", 4.3, 4.5),
+                    ("Program.", 4.6, 4.9),
+                    ("Okay.", 5.6, 5.9),
+                ),
+            ),
+        ]
+        pieces, _notes = _apply_pause_unpause_to_pieces(
+            rows,
+            pause_phrases=["Computer Freeze Program."],
+            unpause_phrases=["Computer Resume Program"],
+            preroll_sec=0.25,
+            postroll_sec=0.7,
+            first_slice_start=None,
+            last_slice_end=None,
+            quietest_fn=lambda lo, hi: lo + 0.12,
+        )
+        pre_pause = [p for p in pieces if p.row.idx == 0]
+        self.assertEqual(len(pre_pause), 1)
+        # Row starts 0; quietest at 1.12 => slice_end 1.12
+        self.assertAlmostEqual(pre_pause[0].slice_end or -1.0, 1.12)
+        seam = [p for p in pieces if p.seam_after_pause]
+        self.assertEqual(len(seam), 1)
+        # Unpause Program ends 4.9; quietest at 5.02 on a row that starts 4.0.
+        self.assertAlmostEqual(seam[0].slice_start or -1.0, 1.02)
+
+    def test_quietest_time_in_span_picks_silence(self) -> None:
+        from generate_full_dsl import quietest_time_in_span
+
+        sr = 8000
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gap.wav"
+            samples = []
+            for i in range(sr):  # 1.0s
+                t = i / sr
+                if 0.40 <= t < 0.55:
+                    samples.append(0)
+                else:
+                    samples.append(int(20000 * math.sin(2 * math.pi * 440 * t)))
+            with wave.open(str(path), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(struct.pack("<" + "h" * len(samples), *samples))
+            found = quietest_time_in_span(path, 0.20, 0.80)
+        self.assertIsNotNone(found)
+        self.assertGreaterEqual(found, 0.38)
+        self.assertLessEqual(found, 0.57)
 
     def test_pause_path_preserves_end_postroll_on_last_piece(self) -> None:
         from generate_full_dsl import _apply_end_phrase, _apply_pause_unpause_to_pieces
@@ -1124,7 +1406,7 @@ class PauseUnpauseTests(unittest.TestCase):
         )
         pieces, _notes = _apply_pause_unpause_to_pieces(
             ended.rows,
-            pause_phrase="Computer Freeze Program.",
+            pause_phrases=["Computer Freeze Program."],
             unpause_phrases=["Computer Resume Program"],
             preroll_sec=0.25,
             postroll_sec=0.7,
@@ -1136,13 +1418,103 @@ class PauseUnpauseTests(unittest.TestCase):
         # friend. ends 21.0; +1s postroll => abs 22.0; row starts 20.0 => slice_end 2.0
         self.assertAlmostEqual(last.slice_end or -1.0, 2.0)
 
+    def test_pause_resume_hold_wide_when_pause_was_closeup(self) -> None:
+        from generate_full_dsl import Piece, _apply_pause_resume_camera_hold
+
+        pre = Row(idx=0, start=0.0, end=5.0, text="Hello", speaker_id=0, speaker_name="Host")
+        resume = Row(idx=1, start=100.0, end=100.4, text="Hi", speaker_id=1, speaker_name="Guest")
+        nxt = Row(idx=2, start=100.4, end=110.0, text="Back", speaker_id=0, speaker_name="Host")
+        pieces = [
+            Piece(row=pre),
+            Piece(row=resume, seam_after_pause=True, resume_abs=100.0),
+            Piece(row=nxt),
+        ]
+        events = [
+            {"cam": "speaker_0", "piece_i": 0, "slice_start": None, "slice_end": None},
+            {"cam": "speaker_1", "piece_i": 1, "slice_start": None, "slice_end": None},
+            {"cam": "speaker_0", "piece_i": 2, "slice_start": None, "slice_end": None},
+        ]
+        notes: list[str] = []
+        out = _apply_pause_resume_camera_hold(
+            pieces,
+            events,
+            cam_by_speaker={0: "speaker_0", 1: "speaker_1"},
+            wide_camera="wide",
+            hold_sec=1.5,
+            notes=notes,
+        )
+        self.assertEqual([e["cam"] for e in out], ["speaker_0", "wide", "wide", "speaker_0"])
+        self.assertAlmostEqual(out[2]["slice_end"], 1.1)
+        self.assertAlmostEqual(out[3]["slice_start"], 1.1)
+        self.assertTrue(out[1].get("pause_hold"))
+        self.assertTrue(out[2].get("pause_hold"))
+        self.assertTrue(out[3].get("after_pause_hold"))
+        self.assertTrue(any("hold wide" in n for n in notes))
+
+    def test_pause_resume_hold_speaker_when_pause_was_wide(self) -> None:
+        from generate_full_dsl import Piece, _apply_pause_resume_camera_hold
+
+        pre = Row(idx=0, start=0.0, end=5.0, text="Hello", speaker_id=0, speaker_name="Host")
+        resume = Row(idx=1, start=100.0, end=100.3, text="Hi", speaker_id=0, speaker_name="Host")
+        nxt = Row(idx=2, start=100.3, end=110.0, text="Guest now", speaker_id=1, speaker_name="Guest")
+        pieces = [
+            Piece(row=pre),
+            Piece(row=resume, seam_after_pause=True, resume_abs=100.0),
+            Piece(row=nxt),
+        ]
+        events = [
+            {"cam": "wide", "piece_i": 0, "slice_start": None, "slice_end": None},
+            {"cam": "speaker_0", "piece_i": 1, "slice_start": None, "slice_end": None},
+            {"cam": "speaker_1", "piece_i": 2, "slice_start": None, "slice_end": None},
+        ]
+        notes: list[str] = []
+        out = _apply_pause_resume_camera_hold(
+            pieces,
+            events,
+            cam_by_speaker={0: "speaker_0", 1: "speaker_1"},
+            wide_camera="wide",
+            hold_sec=1.5,
+            notes=notes,
+        )
+        self.assertEqual(out[0]["cam"], "wide")
+        self.assertEqual(out[1]["cam"], "speaker_0")
+        self.assertEqual(out[2]["cam"], "speaker_0")
+        self.assertEqual(out[-1]["cam"], "speaker_1")
+        self.assertTrue(any("hold speaker_0" in n for n in notes))
+
+    def test_pause_resume_no_hold_when_next_cut_is_later(self) -> None:
+        from generate_full_dsl import Piece, _apply_pause_resume_camera_hold
+
+        pre = Row(idx=0, start=0.0, end=5.0, text="Hello", speaker_id=0, speaker_name="Host")
+        resume = Row(idx=1, start=100.0, end=106.0, text="Hi", speaker_id=1, speaker_name="Guest")
+        nxt = Row(idx=2, start=110.0, end=120.0, text="Back", speaker_id=0, speaker_name="Host")
+        pieces = [
+            Piece(row=pre),
+            Piece(row=resume, seam_after_pause=True, resume_abs=100.0),
+            Piece(row=nxt),
+        ]
+        events = [
+            {"cam": "speaker_0", "piece_i": 0, "slice_start": None, "slice_end": None},
+            {"cam": "speaker_1", "piece_i": 1, "slice_start": None, "slice_end": None},
+            {"cam": "speaker_0", "piece_i": 2, "slice_start": None, "slice_end": None},
+        ]
+        out = _apply_pause_resume_camera_hold(
+            pieces,
+            events,
+            cam_by_speaker={0: "speaker_0", 1: "speaker_1"},
+            wide_camera="wide",
+            hold_sec=1.5,
+            notes=[],
+        )
+        self.assertEqual([e["cam"] for e in out], ["speaker_0", "wide", "speaker_0"])
+
     def test_unmatched_pause_left_in(self) -> None:
         from generate_full_dsl import _apply_pause_unpause_to_pieces
 
         rows = self.rows[:2]  # no unpause
         pieces, _notes = _apply_pause_unpause_to_pieces(
             rows,
-            pause_phrase="Computer Freeze Program.",
+            pause_phrases=["Computer Freeze Program."],
             unpause_phrases=["Computer Resume Program"],
             preroll_sec=0.25,
             postroll_sec=0.7,

@@ -30,7 +30,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from win_hidden_console import install_hidden_console
 
+install_hidden_console()
 
 from harness_episode_lib import (
 

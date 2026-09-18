@@ -17,6 +17,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from win_hidden_console import install_hidden_console
+
+install_hidden_console()
+
 # Prep / streaming target (YouTube/Spotify-class; louder than broadcast -23).
 PREPPED_TARGET_I_LUFS = -14.0
 PREPPED_TARGET_TP_DBTP = -1.5

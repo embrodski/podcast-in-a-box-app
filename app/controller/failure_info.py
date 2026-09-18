@@ -61,7 +61,7 @@ def retry_screen_for_failure(
     ):
         return "E1"
     screen = resume_screen_for(resume_at)
-    if screen in {"E1", "F4", "F3", "F2"}:
+    if screen in {"E1", "F4", "F2"}:
         return screen
     return "E1"
 

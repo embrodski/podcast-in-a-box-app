@@ -37,7 +37,7 @@ from app.gui.widgets.selectable_text import (
     selectable_plain_text,
     set_plain_lines,
 )
-from app.gui.widgets.worker import CallableWorker
+from app.gui.widgets.worker import CallableWorker, start_callable_worker
 
 VISIBLE_LIST_ROWS = 4
 
@@ -345,18 +345,19 @@ class SourceLocationScreen(ScreenWidget):
         self._scan_and_go(ctx, scan_dir)
 
     def _scan_and_go(self, ctx: SessionContext, scan_dir: Path) -> None:
-        if self._scan_worker is not None and self._scan_worker.isRunning():
-            return
-
         self._continue_btn.setEnabled(False)
         self._scan_dialog = _scanning_dialog(self)
 
-        self._scan_worker = CallableWorker(self.controller.scan_session, scan_dir)
-        self._scan_worker.finished_ok.connect(
-            lambda data: self._on_scan_ok(ctx, data)
-        )
-        self._scan_worker.failed.connect(self._on_scan_failed)
-        self._scan_worker.start()
+        if start_callable_worker(
+            self,
+            self.controller.scan_session,
+            scan_dir,
+            attr="_scan_worker",
+            on_ok=lambda data: self._on_scan_ok(ctx, data),
+            on_fail=self._on_scan_failed,
+        ) is None:
+            self._close_scan_dialog()
+            self._continue_btn.setEnabled(True)
 
     def _close_scan_dialog(self) -> None:
         if self._scan_dialog is not None:
@@ -462,22 +463,21 @@ class ConfirmSourceScreen(ScreenWidget):
         if index == ctx.scan_data.get("cluster_index", 0):
             return
         scan_dir = Path(str(ctx.scan_data.get("scan_root", self.controller.scan_root)))
-        if self._cluster_scan_worker is not None and self._cluster_scan_worker.isRunning():
-            return
-
         self._cluster_scan_dialog = _scanning_dialog(self)
         self._cluster_picker.setEnabled(False)
-
-        self._cluster_scan_worker = CallableWorker(
+        if start_callable_worker(
+            self,
             self.controller.scan_session,
             scan_dir,
             cluster_index=index,
-        )
-        self._cluster_scan_worker.finished_ok.connect(
-            lambda data: self._on_cluster_scan_ok(ctx, data, index)
-        )
-        self._cluster_scan_worker.failed.connect(self._on_cluster_scan_failed)
-        self._cluster_scan_worker.start()
+            attr="_cluster_scan_worker",
+            on_ok=lambda data: self._on_cluster_scan_ok(ctx, data, index),
+            on_fail=self._on_cluster_scan_failed,
+        ) is None:
+            if self._cluster_scan_dialog is not None:
+                self._cluster_scan_dialog.close()
+                self._cluster_scan_dialog = None
+            self._cluster_picker.setEnabled(True)
 
     def _on_cluster_scan_ok(
         self,
@@ -729,13 +729,14 @@ class CreateSessionScreen(ScreenWidget):
         self._retry.hide()
         self._back.setEnabled(False)
 
-        if self._worker is not None and self._worker.isRunning():
-            return
-
-        self._worker = CallableWorker(self._init_session, ctx)
-        self._worker.finished_ok.connect(self._on_ok)
-        self._worker.failed.connect(self._on_fail)
-        self._worker.start()
+        if start_callable_worker(
+            self,
+            self._init_session,
+            ctx,
+            on_ok=self._on_ok,
+            on_fail=self._on_fail,
+        ) is None:
+            self._back.setEnabled(True)
 
     def _planned_folder(self, ctx: SessionContext) -> Path:
         if ctx.source_mode == "special" and ctx.special_folder:

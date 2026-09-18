@@ -28,7 +28,7 @@ RESUME_AT_TO_SCREEN: dict[str, str] = {
     "13_delivery": "F4",
     "10a_sync_offset_approval": "F2a",
     "11_one_min_approval": "F2",
-    "12_estimate_full": "F3",
+    "12_estimate_full": "F4",
     "14_done": "F5",
     "cleaned": "A1",
 }

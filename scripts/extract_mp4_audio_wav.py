@@ -12,6 +12,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from win_hidden_console import install_hidden_console
+
+install_hidden_console()
+
 
 def _run(cmd: list[str]) -> None:
     r = subprocess.run(cmd, capture_output=True, text=True)

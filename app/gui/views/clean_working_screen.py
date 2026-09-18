@@ -20,7 +20,7 @@ from app.controller.paths import DEFAULT_WORK_ROOT
 from app.gui.dialogs import confirm_action
 from app.gui.widgets.screen_base import ScreenWidget
 from app.gui.widgets.selectable_text import body_label, heading_label
-from app.gui.widgets.worker import CallableWorker
+from app.gui.widgets.worker import CallableWorker, start_callable_worker
 
 
 class CleanWorkingFilesScreen(ScreenWidget):
@@ -146,15 +146,17 @@ class CleanWorkingFilesScreen(ScreenWidget):
             self._checks.append((check, folder))
 
     def _on_scan(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            return
         self._scan.setEnabled(False)
         self._clean.setEnabled(False)
         self._status.setText(f"Scanning {DEFAULT_WORK_ROOT} for lost sessions…")
-        self._worker = CallableWorker(self.controller.scan_lost_clean_sessions)
-        self._worker.finished_ok.connect(self._on_scan_done)
-        self._worker.failed.connect(self._on_scan_failed)
-        self._worker.start()
+        if start_callable_worker(
+            self,
+            self.controller.scan_lost_clean_sessions,
+            on_ok=self._on_scan_done,
+            on_fail=self._on_scan_failed,
+        ) is None:
+            self._scan.setEnabled(True)
+            self._clean.setEnabled(True)
 
     def _on_scan_done(self, found: object) -> None:
         self._scan.setEnabled(True)
@@ -201,10 +203,15 @@ class CleanWorkingFilesScreen(ScreenWidget):
         self._clean.setEnabled(False)
         self._scan.setEnabled(False)
         self._status.setText("Cleaning…")
-        self._worker = CallableWorker(self._run_clean, selected)
-        self._worker.finished_ok.connect(self._on_clean_done)
-        self._worker.failed.connect(self._on_clean_failed)
-        self._worker.start()
+        if start_callable_worker(
+            self,
+            self._run_clean,
+            selected,
+            on_ok=self._on_clean_done,
+            on_fail=self._on_clean_failed,
+        ) is None:
+            self._clean.setEnabled(True)
+            self._scan.setEnabled(True)
 
     def _run_clean(self, folders: list[Path]) -> list[dict]:
         return self.controller.clean_working_files(folders)

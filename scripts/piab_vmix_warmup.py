@@ -73,15 +73,12 @@ def warmup_decklink_cameras(
     skip the cycle so a live take is not disrupted.
     """
     if skip_if_recording:
-        try:
-            if fetch_active(api_base=api_base):
-                return {
-                    "status": "skipped",
-                    "reason": "already_recording",
-                    "warmed": [],
-                }
-        except Exception:
-            pass
+        if fetch_active(api_base=api_base):
+            return {
+                "status": "skipped",
+                "reason": "already_recording",
+                "warmed": [],
+            }
 
     xml_text = fetch_xml(api_base=api_base)
     numbers = list_decklink_quad_input_numbers(xml_text)

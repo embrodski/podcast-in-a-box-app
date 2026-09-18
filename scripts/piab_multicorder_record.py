@@ -59,6 +59,8 @@ _ALREADY_RECORDING_RESTART = frozenset(
 )
 
 RESTART_PAUSE_SEC = 2.0
+START_CONFIRM_TIMEOUT_SEC = 8.0
+START_CONFIRM_POLL_SEC = 0.25
 
 ALREADY_RECORDING_MESSAGE = (
     "MultiCorder is already recording."
@@ -182,6 +184,9 @@ def start_multicorder(
     request_fn=None,
     fetch_active=is_multicorder_active,
     force: bool = False,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    confirm_timeout_sec: float = START_CONFIRM_TIMEOUT_SEC,
+    confirm_poll_sec: float = START_CONFIRM_POLL_SEC,
 ) -> None:
     if not force and fetch_active(api_base=api_base):
         return
@@ -189,6 +194,26 @@ def start_multicorder(
         "StartMultiCorder",
         api_base=api_base,
         request_fn=request_fn,
+    )
+    deadline = time.monotonic() + max(0.0, confirm_timeout_sec)
+    last_error: Exception | None = None
+    while True:
+        try:
+            if fetch_active(api_base=api_base):
+                return
+            last_error = None
+        except Exception as exc:
+            last_error = exc
+        if time.monotonic() >= deadline:
+            break
+        sleep_fn(confirm_poll_sec)
+    if last_error is not None:
+        raise RuntimeError(
+            "StartMultiCorder was sent but vMix recording state could not be read: "
+            f"{last_error}"
+        ) from last_error
+    raise RuntimeError(
+        "StartMultiCorder was sent but vMix MultiCorder is not recording."
     )
 
 
@@ -228,6 +253,7 @@ def restart_multicorder(
         request_fn=request_fn,
         fetch_active=fetch_active,
         force=True,
+        sleep_fn=sleep_fn,
     )
 
 
@@ -247,6 +273,7 @@ def prepare_multicorder_recording(
             api_base=api_base,
             request_fn=request_fn,
             fetch_active=fetch_active,
+            sleep_fn=sleep_fn,
         )
         return
 

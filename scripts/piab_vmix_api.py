@@ -7,9 +7,25 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from typing import Literal
 
 DEFAULT_VMIX_API_BASE = "http://127.0.0.1:8088/api/"
 DEFAULT_API_WAIT_SEC = 90.0
+
+MulticorderStatus = Literal["recording", "idle", "unreachable"]
+
+
+@dataclass(frozen=True)
+class MulticorderProbe:
+    """vMix MultiCorder state. ``unreachable`` means the API could not be read."""
+
+    status: MulticorderStatus
+    message: str = ""
+
+    @property
+    def is_recording(self) -> bool:
+        return self.status == "recording"
 
 
 def fetch_vmix_xml(*, api_base: str = DEFAULT_VMIX_API_BASE, timeout_sec: float = 10.0) -> str:
@@ -68,3 +84,32 @@ def is_multicorder_active(
     xml_text = fetch_xml(api_base=api_base)
     root = ET.fromstring(xml_text)
     return (root.findtext("multiCorder") or "").strip().lower() == "true"
+
+
+def probe_multicorder(
+    *,
+    api_base: str = DEFAULT_VMIX_API_BASE,
+    fetch_xml=fetch_vmix_xml,
+    timeout_sec: float = 10.0,
+) -> MulticorderProbe:
+    """Read MultiCorder state without treating API errors as idle."""
+    try:
+        xml_text = fetch_xml(api_base=api_base, timeout_sec=timeout_sec)
+        root = ET.fromstring(xml_text)
+    except Exception as exc:
+        return MulticorderProbe(
+            "unreachable",
+            f"Could not read vMix MultiCorder state: {exc}",
+        )
+    if (root.findtext("multiCorder") or "").strip().lower() == "true":
+        return MulticorderProbe("recording")
+    return MulticorderProbe("idle")
+
+
+def recording_lost_message(probe: MulticorderProbe) -> str | None:
+    """User-facing alert when a confirmed recording is no longer verified, or None."""
+    if probe.status == "recording":
+        return None
+    if probe.status == "idle":
+        return "vMix is not recording."
+    return probe.message or "Cannot reach vMix. Recording status is unknown."

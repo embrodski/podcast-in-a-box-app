@@ -16,7 +16,7 @@ DEFAULT_SCAN_ROOT = Path(r"E:\PodcastRoom")
 DEFAULT_APP_HOME = DEFAULT_SCAN_ROOT / "PodcastInABox"
 DEFAULT_WORK_ROOT = DEFAULT_APP_HOME / "Sessions"
 DEFAULT_VMIX_PRESET_DIRS = (DEFAULT_SCAN_ROOT / "vMix Configs",)
-DEFAULT_VMIX_PRESET_NAME = "4 People - 5 Cameras - Default.vmix"
+DEFAULT_VMIX_PRESET_NAME = "4 Cameras - 4 Mics - 1080p - Default.vmix"
 APP_LOCK_PATH = DEFAULT_WORK_ROOT / ".piab-app.lock"
 PROCESS_LOG_FILENAME = "piab-process-log.json"
 PROCESS_LOG_PATH = DEFAULT_WORK_ROOT / PROCESS_LOG_FILENAME
@@ -79,7 +79,7 @@ def ensure_scripts_path() -> Path:
 
 def find_vmix_preset() -> Path | None:
     for directory in DEFAULT_VMIX_PRESET_DIRS:
-        for name in (DEFAULT_VMIX_PRESET_NAME, "Default .vmix"):
+        for name in (DEFAULT_VMIX_PRESET_NAME, DEFAULT_VMIX_PRESET_NAME.replace(".vmix", " .vmix")):
             path = directory / name
             if path.is_file():
                 return path

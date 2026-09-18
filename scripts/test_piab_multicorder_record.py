@@ -11,6 +11,7 @@ from piab_multicorder_record import (
     format_end_phrase_display,
     prepare_multicorder_recording,
     run_multicorder_session,
+    start_multicorder,
     wait_for_recording_continue,
 )
 
@@ -106,6 +107,35 @@ class PiabMulticorderRecordTests(unittest.TestCase):
         )
         self.assertEqual(calls, ["StopMultiCorder", "StartMultiCorder"])
         self.assertEqual(sleeps, [2.0])
+
+    def test_start_multicorder_fails_if_not_active_after_command(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, *, timeout_sec: float) -> None:
+            if "Function=StartMultiCorder" in url:
+                calls.append("StartMultiCorder")
+
+        with self.assertRaisesRegex(RuntimeError, "is not recording"):
+            start_multicorder(
+                request_fn=fake_request,
+                fetch_active=lambda **_kwargs: False,
+                sleep_fn=lambda _sec: None,
+                confirm_timeout_sec=0,
+            )
+        self.assertEqual(calls, ["StartMultiCorder"])
+
+    def test_start_multicorder_fails_if_state_unreadable_after_command(self) -> None:
+        def fake_active(**_kwargs) -> bool:
+            raise TimeoutError("api down")
+
+        with self.assertRaisesRegex(RuntimeError, "could not be read"):
+            start_multicorder(
+                request_fn=lambda url, **_kwargs: None,
+                fetch_active=fake_active,
+                force=True,
+                sleep_fn=lambda _sec: None,
+                confirm_timeout_sec=0,
+            )
 
     def test_continue_button_flag(self) -> None:
         event = threading.Event()

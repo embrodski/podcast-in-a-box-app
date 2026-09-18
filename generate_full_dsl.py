@@ -29,11 +29,15 @@ Use `--no-cameras` to reproduce the legacy behavior (no `!camera` lines, no wide
 
 import argparse
 import json
+import os
 import re
+import struct
+import subprocess
 import sys
+import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Tuple
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -103,6 +107,8 @@ class StartPhraseCut:
     matched_phrase: str
     next_word_text: str
     host_speaker_id: int
+    opening_sec: float = 0.0
+    opening_from_quietest: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +118,7 @@ class EndPhraseCut:
     content_end_abs: float
     matched_phrase: str
     last_word_text: str
+    end_from_quietest: bool = False
 
 
 @dataclass
@@ -123,6 +130,7 @@ class Piece:
     slice_end: Optional[float] = None
     force_cam: Optional[str] = None
     seam_after_pause: bool = False
+    resume_abs: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -234,8 +242,10 @@ def parse_args() -> argparse.Namespace:
             "Required start trigger (case/punctuation-insensitive; I am / I'm "
             "equivalent). With --start-phrase-countdown, the optional countdown "
             "tail may follow the trigger; each tail token may be skipped in order. "
-            "The first cut begins --start-preroll-sec before the first word after "
-            "the trigger (or after the countdown when spoken). Default from "
+            "The first cut begins at the quietest point in the "
+            "--start-preroll-sec window before the first word after "
+            "the trigger (or after the countdown when spoken), falling back "
+            "to that static offset if the search fails. Default from "
             "podcast-phrase-gates.json; if absent, start trimming is skipped."
         ),
     )
@@ -248,7 +258,11 @@ def parse_args() -> argparse.Namespace:
         "--start-preroll-sec",
         type=float,
         default=1.0,
-        help="Seconds before the first post-start-phrase word to begin (default: 1.0).",
+        help=(
+            "Search this many seconds before the first post-start-phrase word "
+            "for the quietest start; fall back to this offset if the search "
+            "fails (default: 1.0)."
+        ),
     )
     parser.add_argument(
         "--start-phrase-countdown",
@@ -280,10 +294,10 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Drop this phrase and everything after it (repeatable; the latest "
-            "match among all end phrases wins). The last cut ends "
-            "--end-postroll-sec after the last word before the phrase, unless "
-            "the phrase begins within that postroll window — then the cut ends "
-            "just before the first word of the phrase. Defaults come from "
+            "match among all end phrases wins). The last cut ends at the "
+            "quietest point in the --end-postroll-sec window after the last "
+            "word before the phrase (clamped so the phrase never appears), "
+            "falling back to that static offset if the search fails. Defaults come from "
             "podcast-phrase-gates.json; if none match, end trimming is skipped."
         ),
     )
@@ -291,13 +305,19 @@ def parse_args() -> argparse.Namespace:
         "--end-postroll-sec",
         type=float,
         default=1.0,
-        help="Seconds after the last pre-end-phrase word to keep (default: 1.0).",
+        help=(
+            "Search this many seconds after the last pre-end-phrase word for "
+            "the quietest end (clamped so the end phrase never appears); fall "
+            "back to this offset if the search fails (default: 1.0)."
+        ),
     )
     parser.add_argument(
         "--pause-phrase",
+        action="append",
         default=None,
         help=(
-            "Pause cue phrase. Matched Pause→Unpause pairs remove the cues and "
+            "Pause cue phrase (repeatable; any match starts a pause). "
+            "Matched Pause→Unpause pairs remove the cues and "
             "everything between them (unless --abort-phrase is present anywhere)."
         ),
     )
@@ -323,15 +343,40 @@ def parse_args() -> argparse.Namespace:
         "--pause-preroll-sec",
         type=float,
         default=0.25,
-        help="Seconds to keep after the last word before a Pause cue (default: 0.25).",
+        help=(
+            "Fallback keep after the last word before Pause when no audio search "
+            "is available. Always clamped so the cut cannot enter the cue "
+            "(default: 0.25)."
+        ),
     )
     parser.add_argument(
         "--pause-postroll-sec",
         type=float,
         default=0.7,
         help=(
-            "Seconds before the first word after an Unpause cue to resume "
-            "(default: 0.7)."
+            "Fallback resume before the first word after Unpause when no audio "
+            "search is available. Always clamped so resume cannot start inside "
+            "the cue (default: 0.7)."
+        ),
+    )
+    parser.add_argument(
+        "--pause-resume-hold-sec",
+        type=float,
+        default=1.5,
+        help=(
+            "If a camera cut would fall within this many seconds after a pause "
+            "resume, hold one camera for that window: wide if the pause shot was "
+            "Host/Guest, or the speaker at resume if the pause shot was wide "
+            "(default: 1.5)."
+        ),
+    )
+    parser.add_argument(
+        "--pause-audio-file",
+        default=None,
+        help=(
+            "WAV (or ffmpeg-readable audio) used to place Start/End/Pause/"
+            "Unpause cuts at the quietest point in each gate window. Defaults "
+            "to the segment prepped WAV when it can be found."
         ),
     )
     return parser.parse_args()
@@ -389,6 +434,14 @@ def _tokenize_phrase(phrase: str) -> List[str]:
     if not tokens:
         raise ValueError(f"Phrase is empty after normalization: {phrase!r}")
     return tokens
+
+
+def _cli_phrase_list(value: object) -> List[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    return [str(p).strip() for p in list(value) if str(p).strip()]
 
 
 def _flatten_match_words(rows: List[Row]) -> List[FlatWord]:
@@ -596,6 +649,8 @@ def _apply_start_trigger_with_countdown(
     countdown_suffix_tokens: List[str],
     allow_in: bool = True,
     preroll_sec: float,
+    quietest_fn: Optional[Callable[[float, float], Optional[float]]] = None,
+    audio_path: Optional[Path] = None,
 ) -> StartPhraseCut:
     if preroll_sec < 0:
         raise ValueError("--start-preroll-sec must be >= 0")
@@ -627,6 +682,11 @@ def _apply_start_trigger_with_countdown(
     rel = float(next_word.start) - float(first.start)
     first_slice_start = rel if rel > 1e-6 else None
     matched = " ".join(flat[k].token for k in range(match_start, match_end))
+    opening_sec, from_quietest = _start_opening_sec(
+        next_word_start=float(next_word.start),
+        preroll_sec=float(preroll_sec),
+        quietest_fn=_resolve_quietest_fn(quietest_fn, audio_path),
+    )
     return StartPhraseCut(
         rows=kept,
         first_slice_start=first_slice_start,
@@ -634,6 +694,8 @@ def _apply_start_trigger_with_countdown(
         matched_phrase=matched,
         next_word_text=next_word.token,
         host_speaker_id=host_speaker_id,
+        opening_sec=opening_sec,
+        opening_from_quietest=from_quietest,
     )
 
 
@@ -645,6 +707,8 @@ def _apply_start_phrase_countdown(
     countdown_suffix_tokens: List[str],
     preroll_sec: float,
     allow_in: bool = True,
+    quietest_fn: Optional[Callable[[float, float], Optional[float]]] = None,
+    audio_path: Optional[Path] = None,
 ) -> StartPhraseCut:
     """Backward-compatible alias: ``phrase`` is the trigger only."""
     return _apply_start_trigger_with_countdown(
@@ -654,6 +718,8 @@ def _apply_start_phrase_countdown(
         countdown_suffix_tokens=countdown_suffix_tokens,
         allow_in=allow_in,
         preroll_sec=preroll_sec,
+        quietest_fn=quietest_fn,
+        audio_path=audio_path,
     )
 
 
@@ -662,6 +728,8 @@ def _apply_start_phrase(
     phrase: str,
     *,
     preroll_sec: float,
+    quietest_fn: Optional[Callable[[float, float], Optional[float]]] = None,
+    audio_path: Optional[Path] = None,
 ) -> StartPhraseCut:
     if preroll_sec < 0:
         raise ValueError("--start-preroll-sec must be >= 0")
@@ -685,6 +753,11 @@ def _apply_start_phrase(
     first = kept[0]
     rel = float(next_word.start) - float(first.start)
     first_slice_start = rel if rel > 1e-6 else None
+    opening_sec, from_quietest = _start_opening_sec(
+        next_word_start=float(next_word.start),
+        preroll_sec=float(preroll_sec),
+        quietest_fn=_resolve_quietest_fn(quietest_fn, audio_path),
+    )
     return StartPhraseCut(
         rows=kept,
         first_slice_start=first_slice_start,
@@ -692,6 +765,8 @@ def _apply_start_phrase(
         matched_phrase=" ".join(phrase_tokens),
         next_word_text=next_word.token,
         host_speaker_id=host_speaker_id,
+        opening_sec=opening_sec,
+        opening_from_quietest=from_quietest,
     )
 
 
@@ -721,6 +796,8 @@ def _apply_end_phrase(
     *,
     postroll_sec: float,
     match_index: int | None = None,
+    quietest_fn: Optional[Callable[[float, float], Optional[float]]] = None,
+    audio_path: Optional[Path] = None,
 ) -> EndPhraseCut:
     if postroll_sec < 0:
         raise ValueError("--end-postroll-sec must be >= 0")
@@ -744,14 +821,12 @@ def _apply_end_phrase(
     if not kept:
         raise ValueError("End phrase left no transcript rows to keep.")
     last = kept[-1]
-    nominal_end_abs = float(last_word.end) + float(postroll_sec)
-    # Mirror of start preroll: extend past the last pre-phrase word by postroll,
-    # unless the end phrase begins within that postroll window — then clamp so
-    # the end phrase (and everything after) never appears in the cut.
-    if end_phrase_start_abs < nominal_end_abs:
-        content_end_abs = end_phrase_start_abs
-    else:
-        content_end_abs = nominal_end_abs
+    content_end_abs, from_quietest = _end_content_abs(
+        last_word_end=float(last_word.end),
+        phrase_start_abs=end_phrase_start_abs,
+        postroll_sec=float(postroll_sec),
+        quietest_fn=_resolve_quietest_fn(quietest_fn, audio_path),
+    )
     rel_end = content_end_abs - float(last.start)
     rel_end = max(rel_end, float(last_word.end) - float(last.start))
     last_slice_end = rel_end
@@ -761,6 +836,7 @@ def _apply_end_phrase(
         content_end_abs=content_end_abs,
         matched_phrase=" ".join(phrase_tokens),
         last_word_text=last_word.token,
+        end_from_quietest=from_quietest,
     )
 
 
@@ -815,50 +891,276 @@ def _find_all_phrase_starts(flat: List[FlatWord], phrase_tokens: List[str]) -> L
     return hits
 
 
+def _earliest_phrase_hit(
+    flat: List[FlatWord],
+    phrases: List[str],
+    *,
+    search_from: int,
+) -> Optional[Tuple[int, int, str]]:
+    best: Optional[Tuple[int, int, str]] = None
+    for phrase in phrases:
+        if not str(phrase).strip():
+            continue
+        tokens = _tokenize_phrase(phrase)
+        for i in _find_all_phrase_starts(flat, tokens):
+            if i < search_from:
+                continue
+            cand = (i, i + len(tokens), " ".join(tokens))
+            if best is None or cand[0] < best[0]:
+                best = cand
+    return best
+
+
 def _match_pause_unpause_pairs(
     flat: List[FlatWord],
-    pause_phrase: str,
+    pause_phrases: List[str],
     unpause_phrases: List[str],
 ) -> List[PausePair]:
-    pause_tokens = _tokenize_phrase(pause_phrase)
-    unpause_token_lists = [_tokenize_phrase(p) for p in unpause_phrases]
     pairs: List[PausePair] = []
     search_from = 0
     while search_from < len(flat):
-        pause_hits = [
-            i
-            for i in _find_all_phrase_starts(flat, pause_tokens)
-            if i >= search_from
-        ]
-        if not pause_hits:
+        pause_hit = _earliest_phrase_hit(flat, pause_phrases, search_from=search_from)
+        if pause_hit is None:
             break
-        pause_i = pause_hits[0]
-        pause_end = pause_i + len(pause_tokens)
-        best: Optional[Tuple[int, int, str]] = None
-        for tokens in unpause_token_lists:
-            for u_i in _find_all_phrase_starts(flat, tokens):
-                if u_i < pause_end:
-                    continue
-                cand = (u_i, u_i + len(tokens), " ".join(tokens))
-                if best is None or cand[0] < best[0]:
-                    best = cand
-        if best is None:
+        pause_i, pause_end, pause_shown = pause_hit
+        unpause_hit = _earliest_phrase_hit(flat, unpause_phrases, search_from=pause_end)
+        if unpause_hit is None:
             # Unmatched pause: leave it in the video; keep scanning after it.
             search_from = pause_i + 1
             continue
-        u_i, u_end, u_phrase = best
+        u_i, u_end, u_phrase = unpause_hit
         pairs.append(
             PausePair(
                 pause_start_i=pause_i,
                 pause_end_i=pause_end,
                 unpause_start_i=u_i,
                 unpause_end_i=u_end,
-                pause_phrase=" ".join(pause_tokens),
+                pause_phrase=pause_shown,
                 unpause_phrase=u_phrase,
             )
         )
         search_from = u_end
     return pairs
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return min(max(value, lo), hi)
+
+
+def _read_wav_span_mono(
+    audio_path: Path,
+    start_sec: float,
+    duration_sec: float,
+) -> Optional[Tuple[List[float], int]]:
+    """Return (mono samples, sample_rate) for a short span, or None."""
+    if duration_sec <= 1e-4 or not audio_path.is_file():
+        return None
+    try:
+        with wave.open(str(audio_path), "rb") as wf:
+            sr = int(wf.getframerate())
+            nch = int(wf.getnchannels())
+            sw = int(wf.getsampwidth())
+            nframes = int(wf.getnframes())
+            if sr <= 0 or nch <= 0 or sw not in (2, 4):
+                raise wave.Error("unsupported wav format")
+            start_i = max(0, int(round(float(start_sec) * sr)))
+            take = max(1, int(round(float(duration_sec) * sr)))
+            if start_i >= nframes:
+                return None
+            take = min(take, nframes - start_i)
+            wf.setpos(start_i)
+            raw = wf.readframes(take)
+    except (wave.Error, EOFError, OSError):
+        return _ffmpeg_decode_span_mono(audio_path, start_sec, duration_sec)
+
+    if sw == 2:
+        count = len(raw) // 2
+        ints = struct.unpack("<" + "h" * count, raw[: count * 2])
+        scale = 32768.0
+    else:
+        count = len(raw) // 4
+        ints = struct.unpack("<" + "i" * count, raw[: count * 4])
+        scale = 2147483648.0
+    if nch == 1:
+        samples = [v / scale for v in ints]
+    else:
+        frames = count // nch
+        samples = []
+        for i in range(frames):
+            acc = 0.0
+            base = i * nch
+            for ch in range(nch):
+                acc += ints[base + ch] / scale
+            samples.append(acc / float(nch))
+    return samples, sr
+
+
+def _ffmpeg_decode_span_mono(
+    audio_path: Path,
+    start_sec: float,
+    duration_sec: float,
+    *,
+    sample_rate: int = 48000,
+) -> Optional[Tuple[List[float], int]]:
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{float(start_sec):.6f}",
+        "-t",
+        f"{float(duration_sec):.6f}",
+        "-i",
+        str(audio_path),
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        "-f",
+        "f32le",
+        "pipe:1",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, check=False)
+    except OSError:
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    raw = proc.stdout
+    count = len(raw) // 4
+    if count < 8:
+        return None
+    samples = list(struct.unpack("<" + "f" * count, raw[: count * 4]))
+    return samples, sample_rate
+
+
+def quietest_time_in_span(
+    audio_path: Path,
+    start_sec: float,
+    end_sec: float,
+    *,
+    rms_window_sec: float = 0.02,
+    hop_sec: float = 0.004,
+) -> Optional[float]:
+    """
+    Return the time of minimum short-window RMS in ``[start_sec, end_sec]``.
+
+    The last RMS window is kept entirely before ``end_sec`` so the first word of
+    a cue is not part of the measurement.
+    """
+    lo = float(start_sec)
+    hi = float(end_sec)
+    if hi <= lo + 1e-4:
+        return None
+    duration = hi - lo
+    loaded = _read_wav_span_mono(audio_path, lo, duration)
+    if loaded is None:
+        return None
+    samples, sr = loaded
+    if sr <= 0 or len(samples) < 8:
+        return None
+    win = max(4, int(round(rms_window_sec * sr)))
+    hop = max(1, int(round(hop_sec * sr)))
+    if len(samples) <= win:
+        return lo + 0.5 * duration
+
+    best_i = 0
+    best_e = float("inf")
+    last_start = len(samples) - win
+    for i in range(0, last_start + 1, hop):
+        chunk = samples[i : i + win]
+        energy = sum(s * s for s in chunk) / float(win)
+        if energy < best_e:
+            best_e = energy
+            best_i = i
+    # Center of the quietest window, still inside the gap.
+    found = lo + (best_i + 0.5 * win) / float(sr)
+    return _clamp(found, lo, hi)
+
+
+def _boundary_in_gap(
+    gap_lo: float,
+    gap_hi: float,
+    *,
+    fallback_offset_from_lo: Optional[float] = None,
+    fallback_offset_from_hi: Optional[float] = None,
+    quietest_fn: Optional[Callable[[float, float], Optional[float]]] = None,
+) -> float:
+    """Pick a cut inside ``[gap_lo, gap_hi]`` (quietest point, else clamped roll)."""
+    lo = float(gap_lo)
+    hi = float(gap_hi)
+    if hi <= lo + 1e-6:
+        return lo
+    if quietest_fn is not None:
+        found = quietest_fn(lo, hi)
+        if found is not None:
+            return _clamp(float(found), lo, hi)
+    if fallback_offset_from_lo is not None:
+        return min(lo + float(fallback_offset_from_lo), hi)
+    if fallback_offset_from_hi is not None:
+        return max(hi - float(fallback_offset_from_hi), lo)
+    return 0.5 * (lo + hi)
+
+
+def _resolve_quietest_fn(
+    quietest_fn: Optional[Callable[[float, float], Optional[float]]],
+    audio_path: Optional[Path],
+) -> Optional[Callable[[float, float], Optional[float]]]:
+    if quietest_fn is not None:
+        return quietest_fn
+    if audio_path is None:
+        return None
+    return lambda lo, hi, _path=audio_path: quietest_time_in_span(_path, lo, hi)
+
+
+def _start_opening_sec(
+    *,
+    next_word_start: float,
+    preroll_sec: float,
+    quietest_fn: Optional[Callable[[float, float], Optional[float]]] = None,
+) -> Tuple[float, bool]:
+    """
+    Seconds to pull before the first content word.
+
+    Search ``[next_word_start - preroll, next_word_start]`` for the quietest
+    point. If that search fails, return the static preroll.
+    """
+    hi = float(next_word_start)
+    roll = float(preroll_sec)
+    if roll <= 1e-9:
+        return 0.0, False
+    lo = hi - roll
+    if quietest_fn is not None and hi > lo + 1e-6:
+        found = quietest_fn(lo, hi)
+        if found is not None:
+            cut = _clamp(float(found), lo, hi)
+            return max(0.0, hi - cut), True
+    return roll, False
+
+
+def _end_content_abs(
+    *,
+    last_word_end: float,
+    phrase_start_abs: float,
+    postroll_sec: float,
+    quietest_fn: Optional[Callable[[float, float], Optional[float]]] = None,
+) -> Tuple[float, bool]:
+    """
+    Absolute end time after the last pre-end-phrase word.
+
+    Search the postroll window (clamped so the end phrase never appears). If
+    that search fails, use the static postroll, still clamped to the phrase.
+    """
+    lo = float(last_word_end)
+    hi = min(float(phrase_start_abs), lo + float(postroll_sec))
+    if hi <= lo + 1e-6:
+        return lo, False
+    if quietest_fn is not None:
+        found = quietest_fn(lo, hi)
+        if found is not None:
+            return _clamp(float(found), lo, hi), True
+    return min(lo + float(postroll_sec), float(phrase_start_abs)), False
 
 
 def _rel_slice_start(row: Row, abs_time: float) -> Optional[float]:
@@ -932,18 +1234,22 @@ def _build_pieces_from_rows(
 def _apply_pause_unpause_to_pieces(
     rows: List[Row],
     *,
-    pause_phrase: str,
+    pause_phrases: List[str],
     unpause_phrases: List[str],
     preroll_sec: float,
     postroll_sec: float,
     first_slice_start: Optional[float],
     last_slice_end: Optional[float],
+    audio_path: Optional[Path] = None,
+    quietest_fn: Optional[Callable[[float, float], Optional[float]]] = None,
 ) -> Tuple[List[Piece], List[str]]:
     """
     Remove matched Pause→Unpause spans from rows and return emit pieces.
 
-    Seam rolls: keep ``preroll_sec`` after the last word before Pause, and resume
-    ``postroll_sec`` before the first word after Unpause. Padding is emitted as
+    Each seam is placed at the quietest point in the gap before the Pause cue
+    and after the Unpause cue (ElevenLabs word times can miss a bit of the
+    word). Without audio, falls back to ``preroll_sec`` / ``postroll_sec``,
+    always clamped so the cut cannot enter the cue. Padding is emitted as
     explicit slice lead-in/tail on the boundary pieces (negative ``slice_start``
     / extended ``slice_end``), not just as keep-interval cut points.
     """
@@ -957,7 +1263,7 @@ def _apply_pause_unpause_to_pieces(
         raise ValueError(
             "--pause-phrase requires word-level timestamps on simplified transcript rows."
         )
-    pairs = _match_pause_unpause_pairs(flat, pause_phrase, unpause_phrases)
+    pairs = _match_pause_unpause_pairs(flat, pause_phrases, unpause_phrases)
     if not pairs:
         return (
             _build_pieces_from_rows(
@@ -976,6 +1282,7 @@ def _apply_pause_unpause_to_pieces(
         cursor_abs = float(rows[0].start) + float(first_slice_start)
 
     seam_force_at_abs: List[float] = []
+    finder = _resolve_quietest_fn(quietest_fn, audio_path)
 
     for pair in pairs:
         if pair.pause_start_i <= 0:
@@ -985,6 +1292,7 @@ def _apply_pause_unpause_to_pieces(
             )
             continue
         last_before = flat[pair.pause_start_i - 1]
+        pause_first = flat[pair.pause_start_i]
         if pair.unpause_end_i >= len(flat):
             notes.append(
                 f"Skipped pause {pair.pause_phrase!r}: no word after unpause "
@@ -992,8 +1300,19 @@ def _apply_pause_unpause_to_pieces(
             )
             continue
         first_after = flat[pair.unpause_end_i]
-        cut_end_abs = float(last_before.end) + float(preroll_sec)
-        resume_abs = float(first_after.start) - float(postroll_sec)
+        unpause_last = flat[pair.unpause_end_i - 1]
+        cut_end_abs = _boundary_in_gap(
+            float(last_before.end),
+            float(pause_first.start),
+            fallback_offset_from_lo=float(preroll_sec),
+            quietest_fn=finder,
+        )
+        resume_abs = _boundary_in_gap(
+            float(unpause_last.end),
+            float(first_after.start),
+            fallback_offset_from_hi=float(postroll_sec),
+            quietest_fn=finder,
+        )
         if resume_abs < cut_end_abs:
             # Degenerate / overlapping rolls — hard join at midpoint.
             mid = 0.5 * (float(last_before.end) + float(first_after.start))
@@ -1004,7 +1323,7 @@ def _apply_pause_unpause_to_pieces(
         seam_force_at_abs.append(resume_abs)
         notes.append(
             f"Pause {pair.pause_phrase!r} → Unpause {pair.unpause_phrase!r}: "
-            f"drop {float(last_before.end):.3f}s..{float(first_after.start):.3f}s"
+            f"drop {cut_end_abs:.3f}s..{resume_abs:.3f}s"
         )
         cursor_abs = resume_abs
 
@@ -1037,12 +1356,137 @@ def _apply_pause_unpause_to_pieces(
                     slice_end=slice_end,
                     force_cam=None,
                     seam_after_pause=is_resume_interval and is_first,
+                    resume_abs=keep_lo if (is_resume_interval and is_first) else None,
                 )
             )
 
     if not pieces:
         raise ValueError("Pause/Unpause removal left no transcript pieces to keep.")
     return pieces, notes
+
+
+def _piece_abs_start(piece: Piece) -> float:
+    if piece.slice_start is not None:
+        return float(piece.row.start) + float(piece.slice_start)
+    return float(piece.row.start)
+
+
+def _piece_abs_end(piece: Piece) -> float:
+    if piece.slice_end is not None:
+        return float(piece.row.start) + float(piece.slice_end)
+    return float(piece.row.end)
+
+
+def _event_abs_start(piece: Piece, ev: dict) -> float:
+    sl = ev.get("slice_start")
+    if sl is not None:
+        return float(piece.row.start) + float(sl)
+    return _piece_abs_start(piece)
+
+
+def _event_abs_end(piece: Piece, ev: dict) -> float:
+    sl = ev.get("slice_end")
+    if sl is not None:
+        return float(piece.row.start) + float(sl)
+    return _piece_abs_end(piece)
+
+
+def _apply_pause_resume_camera_hold(
+    pieces: List[Piece],
+    events: List[dict],
+    *,
+    cam_by_speaker: Mapping[int, str],
+    wide_camera: str,
+    hold_sec: float,
+    notes: List[str],
+) -> List[dict]:
+    """
+    After a pause resume, flip off the pause camera. If another camera cut would
+    land within ``hold_sec``, hold that resume camera for the window:
+
+    - pause was Host/Guest → wide
+    - pause was wide → speaker camera of the first resume line
+    """
+    if not events or hold_sec < 0:
+        return events
+    wide = str(wide_camera)
+    out: List[dict] = []
+    i = 0
+    while i < len(events):
+        ev = dict(events[i])
+        piece = pieces[int(ev["piece_i"])]
+        if not piece.seam_after_pause or i == 0:
+            out.append(ev)
+            i += 1
+            continue
+
+        pause_cam = str(events[i - 1]["cam"])
+        speaker_cam = str(cam_by_speaker.get(piece.row.speaker_id, "speaker_0"))
+        hold_cam = speaker_cam if pause_cam == wide else wide
+        ev["cam"] = hold_cam
+        ev["pause_hold"] = True
+        piece.force_cam = hold_cam
+        resume_t = (
+            float(piece.resume_abs)
+            if piece.resume_abs is not None
+            else _event_abs_start(piece, ev)
+        )
+        hold_until = resume_t + float(hold_sec)
+        out.append(ev)
+
+        cut_within = False
+        j = i + 1
+        while j < len(events):
+            nxt_piece = pieces[int(events[j]["piece_i"])]
+            nstart = _event_abs_start(nxt_piece, events[j])
+            if nstart >= hold_until - 1e-6:
+                break
+            if str(events[j]["cam"]) != hold_cam:
+                cut_within = True
+                break
+            j += 1
+
+        if not cut_within:
+            notes.append(
+                f"Pause seam after row {piece.row.idx}: {pause_cam} → {hold_cam}"
+            )
+            i += 1
+            continue
+
+        j = i + 1
+        while j < len(events):
+            nxt = dict(events[j])
+            nxt_piece = pieces[int(nxt["piece_i"])]
+            nstart = _event_abs_start(nxt_piece, nxt)
+            nend = _event_abs_end(nxt_piece, nxt)
+            if nstart >= hold_until - 1e-6:
+                break
+            if nend > hold_until + 1e-6:
+                rel = hold_until - float(nxt_piece.row.start)
+                first = dict(nxt)
+                first["cam"] = hold_cam
+                first["pause_hold"] = True
+                first["slice_end"] = rel
+                if first.get("slice_start") is None and abs(nstart - float(nxt_piece.row.start)) > 1e-6:
+                    first["slice_start"] = nstart - float(nxt_piece.row.start)
+                second = dict(nxt)
+                second["slice_start"] = rel
+                second["after_pause_hold"] = True
+                out.append(first)
+                out.append(second)
+                j += 1
+                break
+            nxt["cam"] = hold_cam
+            nxt["pause_hold"] = True
+            nxt_piece.force_cam = hold_cam
+            out.append(nxt)
+            j += 1
+        notes.append(
+            f"Pause resume hold {hold_cam} for {hold_sec:.1f}s after row "
+            f"{piece.row.idx} (pause was {pause_cam})"
+        )
+        i = j
+    return out
 
 
 def _normalize_interjection_text(text: str) -> str:
@@ -1393,6 +1837,47 @@ def main() -> int:
         return 1
 
 
+def _resolve_pause_audio_file(
+    *,
+    explicit: Optional[Path],
+    segment_id: str,
+    transcript_path: Path,
+) -> Optional[Path]:
+    if explicit is not None and explicit.is_file():
+        return explicit.resolve()
+    candidates: List[Path] = []
+    env = str(os.environ.get("PODCAST_DSL_SEGMENTS_FILE") or "").strip()
+    if env:
+        candidates.append(Path(env))
+    parent = transcript_path.resolve().parent
+    candidates.append(parent / "segments.json")
+    candidates.append(parent.parent / "Temp" / "segments.json")
+    seen: set[str] = set()
+    for seg_path in candidates:
+        key = str(seg_path.resolve()) if seg_path.exists() else str(seg_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not seg_path.is_file():
+            continue
+        try:
+            data = json.loads(seg_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        entry = data.get(str(segment_id))
+        if not isinstance(entry, dict):
+            continue
+        raw = entry.get("audio_file")
+        if not raw:
+            continue
+        audio = Path(str(raw))
+        if audio.is_file():
+            return audio.resolve()
+    return None
+
+
 def _main_impl() -> int:
     args = apply_namespace_phrase_defaults(parse_args())
 
@@ -1420,6 +1905,13 @@ def _main_impl() -> int:
     if args.abort_phrase and _phrase_exists(full_rows, str(args.abort_phrase)):
         abort_triggered = True
 
+    gate_audio = _resolve_pause_audio_file(
+        explicit=Path(args.pause_audio_file) if args.pause_audio_file else None,
+        segment_id=segment_num,
+        transcript_path=transcript_path,
+    )
+    gate_quietest = _resolve_quietest_fn(None, gate_audio)
+
     trigger_phrase = args.start_trigger_phrase or args.start_phrase
     if trigger_phrase:
         countdown_tokens = list(args.start_phrase_countdown or [])
@@ -1440,12 +1932,14 @@ def _main_impl() -> int:
                     countdown_suffix_tokens=countdown_suffix,
                     allow_in=allow_in,
                     preroll_sec=float(args.start_preroll_sec),
+                    quietest_fn=gate_quietest,
                 )
             else:
                 start_cut = _apply_start_phrase(
                     rows,
                     str(trigger_phrase),
                     preroll_sec=float(args.start_preroll_sec),
+                    quietest_fn=gate_quietest,
                 )
             rows = start_cut.rows
             first_slice_start = start_cut.first_slice_start
@@ -1465,6 +1959,7 @@ def _main_impl() -> int:
                 matched_phrase,
                 postroll_sec=float(args.end_postroll_sec),
                 match_index=match_i,
+                quietest_fn=gate_quietest,
             )
             rows = end_cut.rows
             last_slice_end = end_cut.last_slice_end
@@ -1492,16 +1987,18 @@ def _main_impl() -> int:
             start_cut.host_speaker_id, cam_by_speaker
         )
 
-    unpause_phrases = list(args.unpause_phrase or [])
-    if args.pause_phrase and not abort_triggered:
+    pause_phrases = _cli_phrase_list(args.pause_phrase)
+    unpause_phrases = _cli_phrase_list(args.unpause_phrase)
+    if pause_phrases and not abort_triggered:
         pieces, pause_notes = _apply_pause_unpause_to_pieces(
             rows,
-            pause_phrase=str(args.pause_phrase),
+            pause_phrases=pause_phrases,
             unpause_phrases=unpause_phrases,
             preroll_sec=float(args.pause_preroll_sec),
             postroll_sec=float(args.pause_postroll_sec),
             first_slice_start=first_slice_start,
             last_slice_end=last_slice_end,
+            audio_path=gate_audio,
         )
     else:
         pieces = _build_pieces_from_rows(
@@ -1509,7 +2006,7 @@ def _main_impl() -> int:
             first_slice_start=first_slice_start,
             last_slice_end=last_slice_end,
         )
-        if abort_triggered and args.pause_phrase:
+        if abort_triggered and pause_phrases:
             pause_notes.append(
                 f"Abort phrase present; ignoring Pause/Unpause "
                 f"({args.abort_phrase!r})."
@@ -1518,8 +2015,8 @@ def _main_impl() -> int:
     lines: List[str] = []
 
     if args.no_cameras:
-        if start_cut is not None and float(args.start_preroll_sec) > 0:
-            preroll_ms = int(round(float(args.start_preroll_sec) * 1000.0))
+        if start_cut is not None and float(start_cut.opening_sec) > 1e-6:
+            preroll_ms = int(round(float(start_cut.opening_sec) * 1000.0))
             lines.append(f"!opening {preroll_ms}")
         last_i = len(pieces) - 1
         for idx, piece in enumerate(pieces):
@@ -1597,20 +2094,14 @@ def _main_impl() -> int:
         i += 1
 
     # Pause-seam camera overrides win over dense-wide / intended cams.
-    for ev_i, ev in enumerate(events):
-        piece = pieces[int(ev["piece_i"])]
-        if not piece.seam_after_pause or ev_i == 0:
-            continue
-        before_cam = str(events[ev_i - 1]["cam"])
-        after_speaker_cam = cam_by_speaker.get(piece.row.speaker_id, "speaker_0")
-        if before_cam == str(args.wide_camera):
-            ev["cam"] = after_speaker_cam
-        else:
-            ev["cam"] = str(args.wide_camera)
-        piece.force_cam = str(ev["cam"])
-        pause_notes.append(
-            f"Pause seam after row {piece.row.idx}: {before_cam} → {ev['cam']}"
-        )
+    events = _apply_pause_resume_camera_hold(
+        pieces,
+        events,
+        cam_by_speaker=cam_by_speaker,
+        wide_camera=str(args.wide_camera),
+        hold_sec=float(args.pause_resume_hold_sec),
+        notes=pause_notes,
+    )
 
     camera_switch_offset_ms = (
         0.0 if args.no_camera_switch_offset else float(args.camera_switch_offset_ms)
@@ -1632,9 +2123,7 @@ def _main_impl() -> int:
     )
     for ev, off in zip(events, offset_events):
         piece = pieces[int(ev["piece_i"])]
-        if piece.seam_after_pause:
-            ev["slice_start"] = piece.slice_start
-            ev["slice_end"] = piece.slice_end
+        if piece.seam_after_pause or ev.get("pause_hold") or ev.get("after_pause_hold"):
             continue
         ev["slice_start"] = off.get("slice_start")
         ev["slice_end"] = off.get("slice_end")
@@ -1647,17 +2136,27 @@ def _main_impl() -> int:
     spk_hdr = ", ".join(spk_bits) if spk_bits else "Speaker 0 -> speaker_0, Speaker 1 -> speaker_1"
     lines.append(f"// segment{segment_num} | {spk_hdr}")
     if start_cut is not None:
+        start_how = (
+            "quietest in preroll"
+            if start_cut.opening_from_quietest
+            else "fallback preroll"
+        )
         lines.append(
             f"// Start phrase: {start_cut.matched_phrase!r} -> begin "
-            f"{float(args.start_preroll_sec):.1f}s before {start_cut.next_word_text!r} "
-            f"(abs {start_cut.content_start_abs:.3f}s); "
+            f"{float(start_cut.opening_sec):.2f}s before {start_cut.next_word_text!r} "
+            f"({start_how}; abs {start_cut.content_start_abs:.3f}s); "
             f"Host = transcript speaker_id {start_cut.host_speaker_id} -> speaker_0"
         )
     if end_cut is not None:
+        end_how = (
+            "quietest in postroll"
+            if end_cut.end_from_quietest
+            else "fallback postroll"
+        )
         lines.append(
-            f"// End phrase: {end_cut.matched_phrase!r} -> end "
-            f"{float(args.end_postroll_sec):.1f}s after {end_cut.last_word_text!r} "
-            f"(abs {end_cut.content_end_abs:.3f}s)"
+            f"// End phrase: {end_cut.matched_phrase!r} -> end at "
+            f"abs {end_cut.content_end_abs:.3f}s after {end_cut.last_word_text!r} "
+            f"({end_how})"
         )
     for note in pause_notes:
         lines.append(f"// {note}")
@@ -1678,8 +2177,8 @@ def _main_impl() -> int:
             "disabling cut padding to avoid overlap artifacts"
         )
         lines.append("!cut 0 0")
-    if start_cut is not None and float(args.start_preroll_sec) > 0:
-        preroll_ms = int(round(float(args.start_preroll_sec) * 1000.0))
+    if start_cut is not None and float(start_cut.opening_sec) > 1e-6:
+        preroll_ms = int(round(float(start_cut.opening_sec) * 1000.0))
         lines.append(f"!opening {preroll_ms}")
     lines.append("")
 

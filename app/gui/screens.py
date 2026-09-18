@@ -28,9 +28,9 @@ SCREEN_TITLES: dict[str, str] = {
     "F1": "Something went wrong",
     "F2a": "Sync offset choice",
     "F2": "Review preview",
-    "F3": "Full render estimate",
     "F4": "Rendering full interview",
     "F5": "Done",
 }
 
-PLACEHOLDER_SCREENS = frozenset()
+HOME_SCREENS = frozenset({"A0", "A1", "A2", "A4"})
+FINAL_SCREENS = frozenset({"F4", "F5"})

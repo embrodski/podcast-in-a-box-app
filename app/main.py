@@ -35,6 +35,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    ensure_scripts_path()
+    from win_hidden_console import install_hidden_console
+
+    install_hidden_console()
     _load_secrets()
     migrate_legacy_work_files()
 

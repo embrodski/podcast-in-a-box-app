@@ -10,6 +10,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from win_hidden_console import install_hidden_console
+
+install_hidden_console()
+
 
 SUBFOLDERS = ("Raw", "Input", "Output", "Temp")
 PIAB_STATE_FILENAME = "podcast-in-a-box.json"

@@ -21,7 +21,7 @@ from app.gui.widgets.selectable_text import (
     selectable_plain_text,
     set_plain_lines,
 )
-from app.gui.widgets.worker import CallableWorker
+from app.gui.widgets.worker import CallableWorker, start_callable_worker
 
 
 class DoneScreen(ScreenWidget):
@@ -191,14 +191,14 @@ class DoneScreen(ScreenWidget):
         self._extra_status.setText(f"Sending link to {normalized}…")
 
         folder = self._session_folder
-        self._worker = CallableWorker(
+        start_callable_worker(
+            self,
             self.controller.send_delivery_link_to_email,
             folder,
             normalized,
+            on_ok=self._on_extra_sent,
+            on_fail=self._on_extra_failed,
         )
-        self._worker.finished_ok.connect(self._on_extra_sent)
-        self._worker.failed.connect(self._on_extra_failed)
-        self._worker.start()
 
     def _on_extra_sent(self, recipient: object) -> None:
         self._send_extra.setEnabled(True)

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import logging
+
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -23,7 +25,7 @@ from app.gui.dialogs import (
     confirm_action,
     confirm_cancel_label_apply,
 )
-from app.gui.screens import PLACEHOLDER_SCREENS, SCREEN_TITLES
+from app.gui.screens import FINAL_SCREENS, HOME_SCREENS, SCREEN_TITLES
 from app.gui.session_context import SessionContext
 from app.gui.views import (
     CameraSetupScreen,
@@ -33,7 +35,6 @@ from app.gui.views import (
     DeliveryScreen,
     DoneScreen,
     ErrorScreen,
-    EstimateFullScreen,
     EstimatePrepScreen,
     FullRenderScreen,
     ApplyLabelsScreen,
@@ -42,7 +43,6 @@ from app.gui.views import (
     NewSessionScreen,
     OneMinReviewScreen,
     SyncOffsetReviewScreen,
-    PlaceholderScreen,
     PreflightScreen,
     ProcessingScreen,
     e1_close_requires_confirm,
@@ -63,8 +63,6 @@ from app.gui.widgets.screen_base import ScreenWidget
 if TYPE_CHECKING:
     from app.gui.window_manager import WindowManager
 
-HOME_SCREENS = frozenset({"A0", "A1", "A2", "A4"})
-FINAL_SCREENS = frozenset({"F4", "F5"})
 PREP_SCREENS = frozenset({
     "A3",
     "C1",
@@ -147,13 +145,9 @@ class MainWindow(QMainWindow):
         self._register_screen(ProcessingScreen(controller))
         self._register_screen(SyncOffsetReviewScreen(controller))
         self._register_screen(OneMinReviewScreen(controller))
-        self._register_screen(EstimateFullScreen(controller))
         self._register_screen(FullRenderScreen(controller))
         self._register_screen(ErrorScreen(controller))
         self._register_screen(DoneScreen(controller))
-        for screen_id in sorted(PLACEHOLDER_SCREENS):
-            placeholder = PlaceholderScreen(screen_id, controller)
-            self._register_screen(placeholder)
 
         self._status = QStatusBar()
         self._screen_id_label = QLabel()
@@ -324,6 +318,18 @@ class MainWindow(QMainWindow):
         if callable(on_leave):
             on_leave()
 
+    def _release_idle_window_resources(self) -> None:
+        """Stop this window's poll and drop idle media/timers. Does not destroy widgets."""
+        self._poll.stop()
+        for screen in self._screens.values():
+            release = getattr(screen, "release_idle_resources", None)
+            if callable(release):
+                release()
+
+    def _begin_close_cleanup(self) -> None:
+        self._leave_current_screen()
+        self._release_idle_window_resources()
+
     def navigate(self, screen_id: str, _internal: bool = False) -> None:
         if not _internal and self.manager is not None:
             if self.role == "home" and screen_id not in HOME_SCREENS:
@@ -354,8 +360,6 @@ class MainWindow(QMainWindow):
             return
         if self._stack.currentWidget() is not screen:
             self._leave_current_screen()
-        if isinstance(screen, PlaceholderScreen):
-            screen.set_session_folder(self._session_folder)
         self._stack.setCurrentWidget(screen)
         title = SCREEN_TITLES.get(screen_id, screen_id)
         prefix = {
@@ -372,10 +376,12 @@ class MainWindow(QMainWindow):
         folder = Path(str(session_folder))
         try:
             self.controller.remember_session_folder(folder)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger("piab").warning(
+                "Could not remember session folder %s: %s", folder, exc
+            )
         if self.role == "home" and self.manager is not None:
-            if screen_id in FINAL_SCREENS or screen_id == "F4":
+            if screen_id in FINAL_SCREENS:
                 self.manager.open_final(folder)
                 return
             self.manager.open_flow(screen_id, folder=folder)
@@ -448,7 +454,7 @@ class MainWindow(QMainWindow):
                             event.ignore()
                             return
                     self._allow_close = True
-                self._leave_current_screen()
+                self._begin_close_cleanup()
                 self.manager.ensure_home(navigate_to="A1")
                 self.manager.window_closed(self)
                 event.accept()
@@ -460,7 +466,7 @@ class MainWindow(QMainWindow):
                         event.ignore()
                         return
                     screen.cancel_apply_and_record()
-                self._leave_current_screen()
+                self._begin_close_cleanup()
                 self.manager.ensure_home(navigate_to="A1")
                 self.manager.window_closed(self)
                 event.accept()
@@ -478,18 +484,18 @@ class MainWindow(QMainWindow):
                     if not self._abort_prep_work(ask_confirm=True):
                         event.ignore()
                         return
-                self._leave_current_screen()
+                self._begin_close_cleanup()
                 self.manager.ensure_home(navigate_to="A1")
                 self.manager.window_closed(self)
                 event.accept()
                 return
-            self._leave_current_screen()
+            self._begin_close_cleanup()
             self.manager.window_closed(self)
             event.accept()
             return
 
         if not self.controller.is_busy():
-            self._leave_current_screen()
+            self._begin_close_cleanup()
             self.controller.release_app_lock()
             event.accept()
             return
@@ -500,7 +506,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
 
-        self._leave_current_screen()
+        self._begin_close_cleanup()
         self.controller.interrupt_running_for_quit()
         self.controller.release_app_lock()
         event.accept()

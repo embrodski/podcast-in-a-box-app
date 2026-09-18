@@ -10,8 +10,19 @@ from __future__ import annotations
 import os
 import struct
 import subprocess
+import sys
 from functools import lru_cache
 from typing import List, Optional, Sequence, Tuple
+
+try:
+    from win_hidden_console import install_hidden_console
+except ImportError:
+    _scripts = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
+    if _scripts not in sys.path:
+        sys.path.insert(0, _scripts)
+    from win_hidden_console import install_hidden_console
+
+install_hidden_console()
 
 DEFAULT_HALF_WINDOW_SEC = 0.2
 DEFAULT_SAMPLE_RATE = 48000

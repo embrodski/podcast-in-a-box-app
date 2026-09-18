@@ -3,10 +3,22 @@ Shared utilities for reference-based video color matching.
 """
 
 import math
+import os
 import re
 import subprocess
+import sys
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
+
+try:
+    from win_hidden_console import install_hidden_console
+except ImportError:
+    _scripts = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
+    if _scripts not in sys.path:
+        sys.path.insert(0, _scripts)
+    from win_hidden_console import install_hidden_console
+
+install_hidden_console()
 
 
 def ffmpeg_cmd_base() -> List[str]:

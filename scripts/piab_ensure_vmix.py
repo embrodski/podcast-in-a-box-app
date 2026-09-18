@@ -60,7 +60,13 @@ def launch_vmix(
     executable: Path,
     *,
     launch_fn=None,
+    is_running_fn=None,
 ) -> None:
+    # vMix is not single-instance. startfile/exe again opens a second window
+    # that does not share the first copy's preset or (sometimes) HTTP API.
+    checker = is_running_fn if is_running_fn is not None else is_vmix_running
+    if checker():
+        return
     launcher = launch_fn or _default_launch
     launcher(executable)
 
@@ -129,7 +135,7 @@ def ensure_vmix_running(
         )
 
     print_fn("Opening vMix")
-    launch_vmix(executable, launch_fn=launch_fn)
+    launch_vmix(executable, launch_fn=launch_fn, is_running_fn=is_running_fn)
 
     deadline = time.time() + startup_wait_sec
     while time.time() < deadline:

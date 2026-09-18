@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from piab_open_vmix_preset import (
+    DEFAULT_API_WAIT_SEC,
+    DEFAULT_VMIX_PRESET_NAME,
     current_vmix_preset_path,
     find_vmix_preset,
     normalize_preset_name,
@@ -16,6 +18,12 @@ from piab_open_vmix_preset import (
 
 
 class PiabOpenVmixPresetTests(unittest.TestCase):
+    def test_default_preset_is_four_cameras_1080p(self) -> None:
+        self.assertEqual(
+            DEFAULT_VMIX_PRESET_NAME,
+            "4 Cameras - 4 Mics - 1080p - Default.vmix",
+        )
+
     def test_normalize_preset_name_fixes_space_before_extension(self) -> None:
         names = normalize_preset_name("4 People - 5 Cameras - Default .vmix")
         self.assertIn("4 People - 5 Cameras - Default.vmix", names)
@@ -82,19 +90,17 @@ class PiabOpenVmixPresetTests(unittest.TestCase):
         mock_ensure.assert_called()
 
     @patch("piab_ensure_vmix.launch_vmix")
-    @patch("piab_ensure_vmix.find_vmix_executable")
     @patch("piab_ensure_vmix.ensure_vmix_running")
-    def test_open_vmix_preset_relaunches_when_api_is_down(
-        self, mock_ensure, mock_find, mock_launch
+    def test_open_vmix_preset_does_not_relaunch_while_waiting_for_api(
+        self, mock_ensure, mock_launch
     ) -> None:
         mock_ensure.return_value.ok = True
         mock_ensure.return_value.message = ""
-        mock_find.return_value = Path(r"C:\Program Files (x86)\vMix\vMix64.exe")
-        api_calls = {"n": 0}
+        waits: list[float] = []
 
         def fake_wait(*, api_base, timeout_sec, fetch_xml):
-            api_calls["n"] += 1
-            return api_calls["n"] >= 2
+            waits.append(timeout_sec)
+            return True
 
         with tempfile.TemporaryDirectory() as tmp:
             preset = Path(tmp) / "4 People - 5 Cameras - Default.vmix"
@@ -111,7 +117,8 @@ class PiabOpenVmixPresetTests(unittest.TestCase):
                 )
 
         self.assertEqual(result.status, "opened")
-        mock_launch.assert_called_once()
+        self.assertEqual(waits, [DEFAULT_API_WAIT_SEC])
+        mock_launch.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -14,6 +14,10 @@ from pathlib import Path
 
 import numpy as np
 
+from win_hidden_console import install_hidden_console
+
+install_hidden_console()
+
 from harness_episode_lib import (
     PIAB_STATE_FILENAME,
     SUBFOLDERS,

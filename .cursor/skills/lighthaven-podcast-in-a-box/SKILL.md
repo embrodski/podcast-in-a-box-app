@@ -111,7 +111,7 @@ Use `--skip-vmix` only for automation/CI.
 
 ### Step 0b — Open the PIAB vMix preset
 
-After vMix is running, load **`4 People - 5 Cameras - Default.vmix`** from `E:\PodcastRoom\vMix Configs\`:
+After vMix is running, load **`4 Cameras - 4 Mics - 1080p - Default.vmix`** from `E:\PodcastRoom\vMix Configs\`:
 
 ```powershell
 python scripts/piab_open_vmix_preset.py
@@ -121,7 +121,7 @@ python scripts/piab_open_vmix_preset.py
 
 Behavior:
 
-1. Find `4 People - 5 Cameras - Default.vmix` under `E:\PodcastRoom\vMix Configs\` (also accepts the spaced filename `Default .vmix`).
+1. Find `4 Cameras - 4 Mics - 1080p - Default.vmix` under `E:\PodcastRoom\vMix Configs\`.
 2. If that preset is already loaded, continue immediately.
 3. Otherwise print **`Opening vMix preset: …`** and call the vMix HTTP API (`OpenPreset`) on `http://127.0.0.1:8088/api/`.
 4. Wait until vMix reports the preset path in its API XML.
@@ -364,8 +364,8 @@ Optional phrase gates live in **`podcast-phrase-gates.json`** at the repo root (
 
 Default gates (editable in `podcast-phrase-gates.json`):
 - **Start:** `I solemnly swear I'm up to no good, in five four three two` / preroll 1.0s — `in` before the countdown is optional; countdown numbers may be skipped; optional trailing `one` / `zero` are removed when spoken; skipped if not in transcript
-- **End:** `Be excellent to each other and party on dudes` (alternate: `Hut of brown, now sit down`) / postroll 1.0s — latest match among end phrases wins; skipped if none match
-- **Pause:** `Computer Freeze Program.`
+- **End:** `Mischief Managed` (alternate: `Be excellent to each other and party on dudes`) / postroll 1.0s — latest match among end phrases wins; skipped if none match
+- **Pause:** `Computer Freeze Program.` (alternate: `Computer Pause Program`)
 - **Unpause:** `Computer Resume Program` / `Computer Unfreeze Program`
 - **Abort:** `Emergency override - Eject the warp core`
 - Start speaker → Host camera (`speaker_0`)
@@ -412,7 +412,7 @@ only (~minutes). Unchanged on disk: `Host Video-prepped.mp4`, `Guest Video-prepp
 
 | User intent | Action |
 |-------------|--------|
-| Looks good | Go to Estimate B |
+| Looks good | Queue full render (**F4**). GUI has no Estimate B / F3 screen. |
 | Host/Guest **audio swapped / reversed / wrong mic in the edit** | **`piab_fix_audio_speaker_swap.py --allow-overwrite`** (after overwrite approval) or GUI F2 |
 | Host/Guest **cameras** feel swapped (same speaker-ID fix) | Same as audio swapped |
 | Wrong **Raw** Host/Guest files (mislabeled during Step 2–3) | `piab_swap.py --files video` and/or `--files audio`, then re-run **full prep** (`piab_run_prep.py --allow-overwrite` after approval) |
@@ -420,13 +420,7 @@ only (~minutes). Unchanged on disk: `Host Video-prepped.mp4`, `Guest Video-prepp
 
 ---
 
-### Step 6 — Estimate B + full render
-
-```powershell
-python scripts/piab_estimate.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --which full --mark-awaiting
-```
-
-Show the estimate. **Wait for confirmation.** Then:
+### Step 6 — Full render
 
 ```powershell
 python scripts/piab_run_full_render.py "E:\PodcastRoom\PodcastInABox\Sessions\<name>" --allow-overwrite
@@ -461,7 +455,7 @@ Read `podcast-in-a-box.json` → `resume_at` and `steps`.
 | `06_conversation_sync` … `10_one_min_test` | Run `piab_run_prep.py --resume` (or `piab_start_session.py` → resume) |
 | `10a_sync_offset_approval` | A/B sync offset choice (when confidence failed) → GUI **F2a** |
 | `11_one_min_approval` | Review 1 Min Test → GUI **F2** |
-| `12_estimate_full` | Show Estimate B; on OK full render |
+| `12_estimate_full` | Open Final Render (**F4**) |
 | `14_done` | Finished |
 
 ---

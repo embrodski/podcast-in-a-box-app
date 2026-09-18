@@ -31,12 +31,15 @@ EMBEDDED_DEFAULTS: dict[str, Any] = {
     "start_countdown_suffix_tokens": ["one", "zero"],
     "start_countdown_allow_in": True,
     "end_phrases": [
+        "Mischief Managed",
         "Be excellent to each other and party on dudes",
-        "Hut of brown, now sit down",
     ],
     "start_preroll_sec": 1.0,
     "end_postroll_sec": 1.0,
-    "pause_phrase": "Computer Freeze Program.",
+    "pause_phrases": [
+        "Computer Freeze Program.",
+        "Computer Pause Program",
+    ],
     "unpause_phrases": [
         "Computer Resume Program",
         "Computer Unfreeze Program",
@@ -66,6 +69,7 @@ _STATE_OVERRIDE_KEYS = (
     "start_preroll_sec",
     "end_postroll_sec",
     "pause_phrase",
+    "pause_phrases",
     "unpause_phrases",
     "unpause_phrase",
     "abort_phrase",
@@ -120,6 +124,24 @@ def end_phrases_from_gates(gates: dict[str, Any]) -> list[str]:
         return [str(p) for p in gates["end_phrases"] if str(p).strip()]
     if gates.get("end_phrase"):
         return [str(gates["end_phrase"])]
+    return []
+
+
+def pause_phrases_from_gates(gates: dict[str, Any]) -> list[str]:
+    """Return configured pause phrases (primary + alternates), in order."""
+    if gates.get("pause_phrases"):
+        return [str(p) for p in gates["pause_phrases"] if str(p).strip()]
+    if gates.get("pause_phrase"):
+        return [str(gates["pause_phrase"])]
+    return []
+
+
+def unpause_phrases_from_gates(gates: dict[str, Any]) -> list[str]:
+    """Return configured unpause phrases (primary + alternates), in order."""
+    if gates.get("unpause_phrases"):
+        return [str(p) for p in gates["unpause_phrases"] if str(p).strip()]
+    if gates.get("unpause_phrase"):
+        return [str(gates["unpause_phrase"])]
     return []
 
 
@@ -207,6 +229,20 @@ def _normalize_gates(raw: dict[str, Any]) -> dict[str, Any]:
     elif isinstance(unpause, list):
         out["unpause_phrases"] = [str(p) for p in unpause if str(p).strip()]
     out.pop("unpause_phrase", None)
+
+    pause_phrases: list[str] = []
+    if raw.get("pause_phrases"):
+        pause_phrases.extend(str(p) for p in raw["pause_phrases"] if str(p).strip())
+    elif out.get("pause_phrases"):
+        pause_phrases.extend(str(p) for p in out["pause_phrases"] if str(p).strip())
+    raw_pause = raw.get("pause_phrase")
+    if isinstance(raw_pause, str) and raw_pause.strip():
+        primary = raw_pause.strip()
+        if primary not in pause_phrases:
+            pause_phrases.insert(0, primary)
+    if pause_phrases:
+        out["pause_phrases"] = pause_phrases
+    out.pop("pause_phrase", None)
 
     end_phrases: list[str] = []
     if raw.get("end_phrases"):
@@ -308,6 +344,30 @@ def save_phrase_gates(
     return path
 
 
+def prepped_audio_wav_from_state(state: dict | None) -> str | None:
+    """Absolute prepped WAV path from session state, if the file exists."""
+    if not isinstance(state, dict):
+        return None
+    candidates: list[object] = []
+    prep = state.get("main_prepped")
+    if isinstance(prep, dict):
+        candidates.append(prep.get("prepped_audio_wav"))
+    fast = state.get("fast_preview")
+    if isinstance(fast, dict):
+        arts = fast.get("sandbox_artifacts")
+        if isinstance(arts, dict):
+            sandbox_prep = arts.get("main_prepped")
+            if isinstance(sandbox_prep, dict):
+                candidates.append(sandbox_prep.get("prepped_audio_wav"))
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(str(raw))
+        if path.is_file():
+            return str(path.resolve())
+    return None
+
+
 def podcast_phrase_cli_args(state: dict | None = None) -> list[str]:
     """CLI args for ``generate_full_dsl.py`` from shared gates (+ optional state)."""
     gates = load_phrase_gates(state_overrides=state or {})
@@ -334,15 +394,19 @@ def podcast_phrase_cli_args(state: dict | None = None) -> list[str]:
     if end_phrases and gates.get("end_postroll_sec") is not None:
         out.extend(["--end-postroll-sec", str(gates["end_postroll_sec"])])
 
-    pause_phrase = gates.get("pause_phrase")
-    if pause_phrase:
-        out.extend(["--pause-phrase", str(pause_phrase)])
-        for phrase in gates.get("unpause_phrases") or []:
-            out.extend(["--unpause-phrase", str(phrase)])
+    pause_phrases = pause_phrases_from_gates(gates)
+    if pause_phrases:
+        for phrase in pause_phrases:
+            out.extend(["--pause-phrase", phrase])
+        for phrase in unpause_phrases_from_gates(gates):
+            out.extend(["--unpause-phrase", phrase])
         if gates.get("pause_preroll_sec") is not None:
             out.extend(["--pause-preroll-sec", str(gates["pause_preroll_sec"])])
         if gates.get("pause_postroll_sec") is not None:
             out.extend(["--pause-postroll-sec", str(gates["pause_postroll_sec"])])
+        wav = prepped_audio_wav_from_state(state)
+        if wav:
+            out.extend(["--pause-audio-file", wav])
 
     abort_phrase = gates.get("abort_phrase")
     if abort_phrase:
@@ -376,9 +440,9 @@ def apply_namespace_phrase_defaults(args: Any) -> Any:
     if not getattr(args, "end_phrase", None):
         args.end_phrase = end_phrases_from_gates(gates)
     if getattr(args, "pause_phrase", None) in (None, ""):
-        args.pause_phrase = gates.get("pause_phrase")
+        args.pause_phrase = pause_phrases_from_gates(gates)
     if not getattr(args, "unpause_phrase", None):
-        args.unpause_phrase = list(gates.get("unpause_phrases") or [])
+        args.unpause_phrase = unpause_phrases_from_gates(gates)
     if getattr(args, "abort_phrase", None) in (None, ""):
         args.abort_phrase = gates.get("abort_phrase")
     if getattr(args, "start_preroll_sec", None) is None:

@@ -11,6 +11,7 @@ from piab_ensure_vmix import (
     ensure_vmix_running,
     find_vmix_executable,
     is_vmix_running,
+    launch_vmix,
 )
 
 
@@ -96,6 +97,16 @@ class PiabEnsureVmixTests(unittest.TestCase):
         with patch("os.startfile") as startfile:
             _default_launch(exe)
         startfile.assert_called_once_with(str(exe))
+
+    def test_launch_vmix_is_noop_when_already_running(self) -> None:
+        launched: list[Path] = []
+        exe = Path(r"C:\Program Files (x86)\vMix\vMix64.exe")
+        launch_vmix(
+            exe,
+            launch_fn=lambda path: launched.append(path),
+            is_running_fn=lambda: True,
+        )
+        self.assertEqual(launched, [])
 
 
 if __name__ == "__main__":

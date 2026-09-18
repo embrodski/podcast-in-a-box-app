@@ -42,6 +42,7 @@ def main() -> int:
             value = value.strip()
             if key in (
                 "unpause_phrases",
+                "pause_phrases",
                 "end_phrases",
                 "start_countdown_tokens",
                 "start_countdown_suffix_tokens",

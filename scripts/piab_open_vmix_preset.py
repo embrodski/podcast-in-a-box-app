@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_VMIX_PRESET_NAME = "4 People - 5 Cameras - Default.vmix"
+DEFAULT_VMIX_PRESET_NAME = "4 Cameras - 4 Mics - 1080p - Default.vmix"
 DEFAULT_VMIX_PRESET_DIRS = (
     Path(r"E:\PodcastRoom\vMix Configs"),
 )
@@ -202,11 +202,7 @@ def open_vmix_preset(
         )
 
     print_fn(f"Opening vMix preset: {resolved.name}")
-    from piab_ensure_vmix import (
-        ensure_vmix_running,
-        find_vmix_executable,
-        launch_vmix,
-    )
+    from piab_ensure_vmix import ensure_vmix_running
 
     started = ensure_vmix_running(print_fn=print_fn)
     if not started.ok:
@@ -216,14 +212,9 @@ def open_vmix_preset(
             message=started.message or "vMix could not be started.",
         )
 
-    if not wait_for_vmix_api(
-        api_base=api_base,
-        timeout_sec=min(3.0, api_wait_sec),
-        fetch_xml=fetch_xml,
-    ):
-        executable = find_vmix_executable()
-        if executable is not None:
-            launch_vmix(executable)
+    # Wait for the instance we just started (or found). Never startfile vMix
+    # again here: a second copy will not load the preset, and it can steal
+    # port 8088 so PIAB talks to the empty window.
     if not wait_for_vmix_api(
         api_base=api_base,
         timeout_sec=api_wait_sec,

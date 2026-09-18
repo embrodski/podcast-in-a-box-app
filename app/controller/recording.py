@@ -22,10 +22,6 @@ class RecordingPhrases:
         return self.trigger_phrase
 
 
-_START_PHRASE = "I solemnly swear I'm up to no good"
-_PAUSE_PHRASE = "Computer, Pause Program"
-_RESUME_PHRASE = "Computer, Resume Program"
-_END_PHRASE = "Be excellent to each other and party on dudes"
 _PHRASE_COLOR_GREEN = "#4ade80"
 _PHRASE_COLOR_BLUE = "#60a5fa"
 _WARNING_COLOR_RED = "#f87171"
@@ -74,11 +70,29 @@ def _quoted_phrase(phrase: str, color: str) -> str:
 
 def recording_controls_html() -> str:
     """Centered rich-text copy for the B4 recording-controls panel."""
+    ensure_scripts_path()
+    from podcast_phrase_gates import (
+        end_phrases_from_gates,
+        load_phrase_gates,
+        pause_phrases_from_gates,
+        start_trigger_phrase_from_gates,
+        unpause_phrases_from_gates,
+    )
+
+    gates = load_phrase_gates(create_file_if_missing=False)
+    start = start_trigger_phrase_from_gates(gates)
+    pause_phrases = pause_phrases_from_gates(gates)
+    unpause_phrases = unpause_phrases_from_gates(gates)
+    end_phrases = end_phrases_from_gates(gates)
+    pause = pause_phrases[0] if pause_phrases else ""
+    resume = unpause_phrases[0] if unpause_phrases else ""
+    end = end_phrases[0] if end_phrases else ""
+
     large = f"font-size:{_PHRASE_FONT_SIZE};"
-    start = _quoted_phrase(_START_PHRASE, _PHRASE_COLOR_GREEN)
-    pause = _quoted_phrase(_PAUSE_PHRASE, _PHRASE_COLOR_BLUE)
-    resume = _quoted_phrase(_RESUME_PHRASE, _PHRASE_COLOR_BLUE)
-    end = _quoted_phrase(_END_PHRASE, _PHRASE_COLOR_GREEN)
+    start_q = _quoted_phrase(start, _PHRASE_COLOR_GREEN)
+    pause_q = _quoted_phrase(pause, _PHRASE_COLOR_BLUE)
+    resume_q = _quoted_phrase(resume, _PHRASE_COLOR_BLUE)
+    end_q = _quoted_phrase(end, _PHRASE_COLOR_GREEN)
     warning = (
         f'<span style="color:{_WARNING_COLOR_RED};">'
         f"{html.escape('THIS WILL STOP RECORDING! DO NOT PUSH UNTIL YOU ARE DONE WITH THE PODCAST!')}"
@@ -88,15 +102,15 @@ def recording_controls_html() -> str:
         '<div style="text-align:center;">'
         "Program is running.<br>"
         "<br>"
-        f'<span style="{large}">Start Phrase is {start}</span><br>'
+        f'<span style="{large}">Start Phrase is {start_q}</span><br>'
         "<br>"
-        f'<span style="{large}">Pause Phrase is {pause}</span><br>'
-        f'<span style="{large}">Resume Phrase is {resume}</span><br>'
+        f'<span style="{large}">Pause Phrase is {pause_q}</span><br>'
+        f'<span style="{large}">Resume Phrase is {resume_q}</span><br>'
         "<br>"
-        f'<span style="{large}">End Phrase is {end}</span><br>'
+        f'<span style="{large}">End Phrase is {end_q}</span><br>'
         "<br>"
         "<br>"
-        f"When you are done, press Continue. {warning}"
+        f"When you are done, press Stop. {warning}"
         "</div>"
     )
 

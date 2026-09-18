@@ -24,6 +24,17 @@ from .clip_processing import get_clip_info, parse_segment_id, load_transcript
 from .color_match import build_color_match_vf
 from .zero_cross_snap import snap_boundary_group_time, snap_enabled
 
+try:
+    from win_hidden_console import install_hidden_console
+except ImportError:
+    _scripts = os.path.join(os.path.dirname(__file__), "..", "..", "scripts")
+    _scripts = os.path.normpath(_scripts)
+    if _scripts not in sys.path:
+        sys.path.insert(0, _scripts)
+    from win_hidden_console import install_hidden_console
+
+install_hidden_console()
+
 
 # Cache directory for intermediate results
 def _default_cache_dir() -> str:

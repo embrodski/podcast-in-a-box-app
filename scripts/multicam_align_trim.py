@@ -52,6 +52,10 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+from win_hidden_console import install_hidden_console
+
+install_hidden_console()
+
 import numpy as np
 from scipy import signal
 from scipy.io import wavfile

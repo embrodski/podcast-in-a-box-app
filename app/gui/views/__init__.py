@@ -18,7 +18,6 @@ from app.gui.views.error_screen import ErrorScreen
 from app.gui.views.clean_working_screen import CleanWorkingFilesScreen
 from app.gui.views.done_screen import DoneScreen
 from app.gui.views.new_session_screen import NewSessionScreen
-from app.gui.views.placeholder_screen import PlaceholderScreen
 from app.gui.views.processing_screen import ProcessingScreen, e1_close_requires_confirm
 from app.gui.views.preflight_screen import PreflightScreen
 from app.gui.views.resume_screen import ResumeScreen
@@ -30,12 +29,9 @@ from app.gui.views.recording_screens import (
     VmixEnsureScreen,
     VmixPresetScreen,
 )
-from app.gui.views.review_screens import (
-    EstimateFullScreen,
-    FullRenderScreen,
-    OneMinReviewScreen,
-    SyncOffsetReviewScreen,
-)
+from app.gui.views.full_render_screen import FullRenderScreen
+from app.gui.views.one_min_review_screen import OneMinReviewScreen
+from app.gui.views.sync_offset_review_screen import SyncOffsetReviewScreen
 from app.gui.views.welcome_screen import WelcomeScreen
 
 __all__ = [
@@ -47,14 +43,12 @@ __all__ = [
     "DeliveryScreen",
     "DoneScreen",
     "ErrorScreen",
-    "EstimateFullScreen",
     "EstimatePrepScreen",
     "FullRenderScreen",
     "LabelCamerasScreen",
     "LabelMicrophonesScreen",
     "NewSessionScreen",
     "OneMinReviewScreen",
-    "PlaceholderScreen",
     "PreflightScreen",
     "ProcessingScreen",
     "e1_close_requires_confirm",

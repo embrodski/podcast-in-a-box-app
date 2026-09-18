@@ -30,6 +30,19 @@ class CloseMediaPlayerTests(unittest.TestCase):
         screen = ScreenWidget(controller=None)
         screen.on_leave()
 
+    def test_release_idle_resources_calls_on_leave(self) -> None:
+        class Probe(ScreenWidget):
+            def __init__(self) -> None:
+                super().__init__(controller=None)
+                self.left = False
+
+            def on_leave(self) -> None:
+                self.left = True
+
+        screen = Probe()
+        screen.release_idle_resources()
+        self.assertTrue(screen.left)
+
 
 if __name__ == "__main__":
     unittest.main()

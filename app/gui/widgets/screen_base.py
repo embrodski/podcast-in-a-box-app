@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QWidget
@@ -29,11 +30,25 @@ class ScreenWidget(QWidget):
             return None
         return self._context_provider()
 
+    def session_folder(self) -> Path | None:
+        ctx = self.context()
+        if ctx is None or ctx.session_folder is None:
+            return None
+        return ctx.session_folder
+
     def on_enter(self) -> None:
         """Called when this screen becomes visible."""
 
     def on_leave(self) -> None:
         """Called when navigating away or when the window is closing."""
+
+    def release_idle_resources(self) -> None:
+        """Stop timers and drop media this screen holds while hidden.
+
+        Called when the parent window is closing. Must not abort jobs,
+        stop MultiCorder, or wait on workers.
+        """
+        self.on_leave()
 
     def title(self) -> str:
         from app.gui.screens import SCREEN_TITLES

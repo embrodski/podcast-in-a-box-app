@@ -364,7 +364,7 @@ After abort: **F1** or home with “Session saved at … — resume later.” Pa
 | vMix | Process list + optional API `127.0.0.1:8088` | Block **recording** path |
 | FFmpeg / ffprobe | `shutil.which` + probe | Block **autocut** |
 | Disk space | Free space on `E:\PodcastRoom` (e.g. ≥ 20 GB warn, critical block) | Block or warn |
-| vMix preset | `E:\PodcastRoom\vMix Configs\4 People - 5 Cameras - Default.vmix` | Block **recording** |
+| vMix preset | `E:\PodcastRoom\vMix Configs\4 Cameras - 4 Mics - 1080p - Default.vmix` | Block **recording** |
 | ElevenLabs | `ELEVENLABS_API_KEY` | Block **autocut** |
 | Delivery (if email) | SMTP / Frame.io env | Warn; allow disk-only |
 | Network | Optional | Warn for transcribe / delivery |

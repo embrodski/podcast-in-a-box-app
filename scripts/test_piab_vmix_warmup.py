@@ -85,6 +85,18 @@ class PiabVmixWarmupTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "no_decklink_inputs")
 
+    def test_warmup_raises_when_recording_state_unreadable(self) -> None:
+        def boom(**_kwargs):
+            raise TimeoutError("api down")
+
+        with self.assertRaises(TimeoutError):
+            warmup_decklink_cameras(
+                fetch_xml=lambda **_kwargs: SAMPLE_XML,
+                request_fn=lambda url, **_kwargs: None,
+                sleep_fn=lambda _sec: None,
+                fetch_active=boom,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
