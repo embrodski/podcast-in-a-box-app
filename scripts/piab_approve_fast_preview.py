@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from episode_segments import MAIN_SEGMENT_KEY
 from piab_fast_preview_lib import (
     resolve_preview_one_min_path,
     restore_canonical_paths,
@@ -26,6 +27,8 @@ def approve_fast_preview(working_folder: Path, *, skip_preview: bool = False) ->
         preview_mode = "skipped"
         sync_ab = False
         preview_path_text = ""
+        # Same key the 1-min preview path sets; full render / --rebuild-dsl need it.
+        state["main_segment_id"] = MAIN_SEGMENT_KEY
     else:
         preview_mode = (state.get("fast_preview") or {}).get("preview_render_mode", "head_autocut")
         sync_ab = bool((state.get("fast_preview") or {}).get("sync_ab_required"))

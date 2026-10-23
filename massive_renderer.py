@@ -153,6 +153,8 @@ def _run_render_job(
         cmd.extend(["--video-encoder", video_encoder])
     if hardware_encode:
         cmd.append("--hardware-encode")
+    else:
+        cmd.append("--no-hardware-encode")
     if video_preset:
         cmd.extend(["--video-preset", video_preset])
 
@@ -188,12 +190,16 @@ def _parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         "--video-encoder",
         choices=["auto", "libx264", "h264_nvenc", "h264_qsv", "h264_amf"],
         default=None,
-        help="Optional encoder override (defaults to podcast_dsl default: libx264).",
+        help="Optional encoder override (defaults to podcast_dsl default: libx264 + hardware auto-pick).",
     )
     p.add_argument(
         "--hardware-encode",
-        action="store_true",
-        help="Forward --hardware-encode to podcast_dsl (try hardware encoders with libx264 fallback).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Forward hardware encode preference to podcast_dsl (default: on). "
+            "Use --no-hardware-encode for software-only libx264."
+        ),
     )
     p.add_argument("--video-preset", default=None, help="Optional encoder preset override.")
     p.add_argument(

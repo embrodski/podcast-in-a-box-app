@@ -5,6 +5,10 @@ official API, then write JSON and a text file next to the input.
 
 Requires ELEVENLABS_API_KEY in the environment (or pass --api-key).
 
+Large uncompressed audio (e.g. multi-GB Host Clean Audio-prepped.wav) is
+re-encoded with ffmpeg to a compact mono MP3 before upload, and the multipart
+POST streams from disk so the full file is never loaded into RAM.
+
 API reference: https://elevenlabs.io/docs/api-reference/speech-to-text/convert
 """
 from __future__ import annotations
@@ -13,39 +17,186 @@ import argparse
 import json
 import mimetypes
 import os
+import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+from win_hidden_console import merge_hidden_console_kwargs
 
 
 API_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 
+# Uncompressed / large-container formats benefit from a speech-sized re-encode.
+_COMPRESS_SUFFIXES = {".wav", ".wave", ".aiff", ".aif", ".flac"}
+# Above this size, re-encode before upload (keeps peak RAM and transfer small).
+_COMPRESS_THRESHOLD_BYTES = 32 * 1024 * 1024
+_STREAM_CHUNK = 1024 * 1024
 
-def _multipart_body(fields: dict[str, str], file_path: Path) -> tuple[bytes, str]:
+
+def _multipart_preamble_and_epilogue(
+    fields: dict[str, str],
+    *,
+    filename: str,
+    content_type: str,
+) -> tuple[bytes, bytes, str]:
     boundary = uuid.uuid4().hex
     crlf = b"\r\n"
-    chunks: list[bytes] = []
+    parts: list[bytes] = []
 
     for name, value in fields.items():
-        chunks.append(
+        parts.append(
             f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}'.encode()
             + crlf
         )
 
-    fname = file_path.name
-    ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
     header = (
-        f'--{boundary}\r\n'
-        f'Content-Disposition: form-data; name="file"; filename="{fname}"\r\n'
-        f"Content-Type: {ctype}\r\n\r\n"
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n"
     )
-    data = file_path.read_bytes()
-    chunks.append(header.encode() + data + crlf)
-    chunks.append(f"--{boundary}--\r\n".encode())
-    return b"".join(chunks), boundary
+    parts.append(header.encode())
+    preamble = b"".join(parts)
+    epilogue = crlf + f"--{boundary}--\r\n".encode()
+    return preamble, epilogue, boundary
+
+
+class _MultipartStream:
+    """file-like multipart body that streams the file payload from disk."""
+
+    def __init__(self, fields: dict[str, str], file_path: Path) -> None:
+        fname = file_path.name
+        ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
+        self._preamble, self._epilogue, self._boundary = _multipart_preamble_and_epilogue(
+            fields, filename=fname, content_type=ctype
+        )
+        self._file_path = file_path
+        self._file_size = file_path.stat().st_size
+        self._total = len(self._preamble) + self._file_size + len(self._epilogue)
+        self._buf = b""
+        self._gen: Iterator[bytes] | None = None
+        self._closed = False
+
+    @property
+    def content_type(self) -> str:
+        return f"multipart/form-data; boundary={self._boundary}"
+
+    def __len__(self) -> int:
+        return self._total
+
+    def _chunks(self) -> Iterator[bytes]:
+        yield self._preamble
+        with open(self._file_path, "rb") as fp:
+            while True:
+                block = fp.read(_STREAM_CHUNK)
+                if not block:
+                    break
+                yield block
+        yield self._epilogue
+
+    def read(self, size: int = -1) -> bytes:
+        if self._closed:
+            return b""
+        if self._gen is None:
+            self._gen = self._chunks()
+        if size == 0:
+            return b""
+
+        out = bytearray()
+        while size < 0 or len(out) < size:
+            if not self._buf:
+                try:
+                    self._buf = next(self._gen)
+                except StopIteration:
+                    break
+            if size < 0:
+                out.extend(self._buf)
+                self._buf = b""
+            else:
+                need = size - len(out)
+                out.extend(self._buf[:need])
+                self._buf = self._buf[need:]
+        return bytes(out)
+
+    def close(self) -> None:
+        self._closed = True
+        self._gen = None
+        self._buf = b""
+
+
+def _should_compress_for_upload(path: Path) -> bool:
+    if path.suffix.lower() not in _COMPRESS_SUFFIXES:
+        return False
+    try:
+        return path.stat().st_size >= _COMPRESS_THRESHOLD_BYTES
+    except OSError:
+        return False
+
+
+def _compress_audio_for_upload(src: Path) -> Path:
+    """
+    Re-encode large WAV/FLAC/AIFF to mono 16 kHz 64 kbps MP3 for STT upload.
+
+    Speech-to-text does not need lossless PCM; this cuts multi-GB files to tens
+    of MB so upload RAM and transfer stay practical.
+    """
+    fd, tmp_name = tempfile.mkstemp(prefix="piab-el-upload-", suffix=".mp3")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(src),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "64k",
+        str(tmp),
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        **merge_hidden_console_kwargs(),
+    )
+    if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size <= 0:
+        tmp.unlink(missing_ok=True)
+        detail = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+        raise RuntimeError(f"ffmpeg compress-for-upload failed for {src}: {detail}")
+    return tmp
+
+
+def _prepare_upload_file(src: Path) -> tuple[Path, Path | None]:
+    """
+    Return (path_to_upload, temp_to_delete_or_None).
+
+    Large uncompressed audio is compressed to a temp MP3; callers must delete
+    the temp path when finished.
+    """
+    if not _should_compress_for_upload(src):
+        return src, None
+    src_mb = src.stat().st_size / (1024 * 1024)
+    print(
+        f"Compressing {src.name} ({src_mb:.1f} MiB) to mono 16 kHz MP3 for upload…",
+        file=sys.stderr,
+    )
+    compressed = _compress_audio_for_upload(src)
+    out_mb = compressed.stat().st_size / (1024 * 1024)
+    print(f"Upload payload: {compressed.name} ({out_mb:.1f} MiB)", file=sys.stderr)
+    return compressed, compressed
 
 
 def _request_transcription(
@@ -71,14 +222,16 @@ def _request_transcription(
         # API expects a JSON-serializable list of export option objects.
         fields["additional_formats"] = json.dumps(additional_formats)
 
-    body, boundary = _multipart_body(fields, wav)
+    upload_path, temp_path = _prepare_upload_file(wav)
+    body = _MultipartStream(fields, upload_path)
     req = Request(
         API_URL,
         data=body,
         method="POST",
         headers={
             "xi-api-key": api_key,
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Type": body.content_type,
+            "Content-Length": str(len(body)),
         },
     )
     try:
@@ -87,6 +240,10 @@ def _request_transcription(
     except HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"ElevenLabs API HTTP {e.code}: {detail}") from e
+    finally:
+        body.close()
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
     try:
         return json.loads(raw)

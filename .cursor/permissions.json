@@ -1,0 +1,18 @@
+{
+  // Workspace Auto-review steering for Podcast In A Box / Inkhaven workflows.
+  // Keep allowlists out of this file so Auto-review remains selectable in the UI.
+  "autoRun": {
+    "allow_instructions": [
+      "Allow full routine access to this repo and its Sessions, Temp, Input, Output, Raw, and episode working folders under E:\\PodcastRoom\\PodcastInABox without approval prompts.",
+      "Allow reading MultiCorder / PodcastRoom dumps and related media under E:\\PodcastRoom when labeling, syncing, or diagnosing sessions.",
+      "Allow short non-render diagnostics (ffprobe, file listing, JSON/DSL inspection, dry-runs) and Python/script helpers that do not start long video encodes.",
+      "Allow installing Python/Node dependencies needed by this repo and fetching public docs for ffmpeg, ElevenLabs, and related tooling."
+    ],
+    "block_instructions": [
+      "Require approval before starting long video renders, multicam prep, full PIAB/interview encodes, or other jobs likely to run many minutes or create multi-GB outputs — unless the user already approved that specific job in the conversation.",
+      "Require approval before overwriting existing Output deliverables, episode harness JSON, or finalized DSL/transcript exports unless the user explicitly approved overwrite or a new filename.",
+      "Require approval for deleting Raw source media, wiping Sessions folders, or mass-deleting Temp mp4 caches outside a clearly requested cleanup.",
+      "Require approval for force-push, hard reset, or rewriting git history in this repo."
+    ]
+  }
+}

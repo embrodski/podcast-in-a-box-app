@@ -111,7 +111,7 @@ Use `--skip-vmix` only for automation/CI.
 
 ### Step 0b — Open the PIAB vMix preset
 
-After vMix is running, load **`4 Cameras - 4 Mics - 1080p - Default.vmix`** from `E:\PodcastRoom\vMix Configs\`:
+After vMix is running, load **`4 Cameras - 4 Mics - 4K.vmix`** from `E:\PodcastRoom\vMix Configs\`:
 
 ```powershell
 python scripts/piab_open_vmix_preset.py
@@ -121,7 +121,7 @@ python scripts/piab_open_vmix_preset.py
 
 Behavior:
 
-1. Find `4 Cameras - 4 Mics - 1080p - Default.vmix` under `E:\PodcastRoom\vMix Configs\`.
+1. Find `4 Cameras - 4 Mics - 4K.vmix` under `E:\PodcastRoom\vMix Configs\`.
 2. If that preset is already loaded, continue immediately.
 3. Otherwise print **`Opening vMix preset: …`** and call the vMix HTTP API (`OpenPreset`) on `http://127.0.0.1:8088/api/`.
 4. Wait until vMix reports the preset path in its API XML.

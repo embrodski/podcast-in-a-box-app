@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_VMIX_PRESET_NAME = "4 Cameras - 4 Mics - 1080p - Default.vmix"
+DEFAULT_VMIX_PRESET_NAME = "4 Cameras - 4 Mics - 4K.vmix"
 DEFAULT_VMIX_PRESET_DIRS = (
     Path(r"E:\PodcastRoom\vMix Configs"),
 )

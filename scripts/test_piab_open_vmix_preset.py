@@ -18,10 +18,10 @@ from piab_open_vmix_preset import (
 
 
 class PiabOpenVmixPresetTests(unittest.TestCase):
-    def test_default_preset_is_four_cameras_1080p(self) -> None:
+    def test_default_preset_is_four_cameras_4k(self) -> None:
         self.assertEqual(
             DEFAULT_VMIX_PRESET_NAME,
-            "4 Cameras - 4 Mics - 1080p - Default.vmix",
+            "4 Cameras - 4 Mics - 4K.vmix",
         )
 
     def test_normalize_preset_name_fixes_space_before_extension(self) -> None:

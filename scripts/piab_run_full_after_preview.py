@@ -15,6 +15,7 @@ from win_hidden_console import install_hidden_console
 
 install_hidden_console()
 
+from episode_segments import MAIN_SEGMENT_KEY
 from harness_episode_lib import (
     combined_audio_output_name,
     find_conversation_wav_pair,
@@ -196,6 +197,9 @@ def run_full_prep_after_preview(
     )
     state["resume_at"] = "13_full_render"
     write_canonical_main_segments(state)
+    # Guarantee full render's DSL gate / --rebuild-dsl see a segment id (skip-preview
+    # never ran the 1-min path that normally sets this).
+    state["main_segment_id"] = MAIN_SEGMENT_KEY
     save_piab_state(working, state)
 
     return {

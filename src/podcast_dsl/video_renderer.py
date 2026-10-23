@@ -54,6 +54,12 @@ VIDEO_HARDWARE_ENCODE_ENV = 'PODCAST_DSL_HARDWARE_ENCODE'
 VIDEO_DOWNSCALE_4K_ENV = 'PODCAST_DSL_DOWNSCALE_4K_TO_1080P'
 DEFAULT_VIDEO_ENCODER = 'libx264'
 AUTO_HARDWARE_ENCODERS = ('h264_nvenc', 'h264_qsv', 'h264_amf')
+# YouTube 1080p-like final delivery (VBR ~8 Mbps cap; CQ/CRF ~23).
+DELIVERY_VIDEO_BITRATE = '8M'
+DELIVERY_VIDEO_MAXRATE = '10M'
+DELIVERY_VIDEO_BUFSIZE = '16M'
+DELIVERY_AUDIO_BITRATE = '192k'
+DELIVERY_QUALITY_LEVEL = 23
 # (stage_default_preset, encoder_env, hardware_encode_flag, preset_env_raw) -> resolved name
 _resolved_encoder_memo: Dict[Tuple[str, str, bool, str], str] = {}
 ENCODER_TEST_WIDTH = 1280
@@ -161,11 +167,18 @@ def _map_encoder_preset(video_encoder: str, preset: str) -> str:
             'superfast': 'p2',
             'veryfast': 'p2',
             'faster': 'p3',
-            'fast': 'fast',
-            'medium': 'medium',
-            'slow': 'slow',
+            'fast': 'p4',
+            'medium': 'p5',
+            'slow': 'p6',
             'slower': 'p6',
             'veryslow': 'p7',
+            'p1': 'p1',
+            'p2': 'p2',
+            'p3': 'p3',
+            'p4': 'p4',
+            'p5': 'p5',
+            'p6': 'p6',
+            'p7': 'p7',
         }.get(preset, preset)
     if video_encoder == 'h264_qsv':
         return {
@@ -194,7 +207,23 @@ def _map_encoder_preset(video_encoder: str, preset: str) -> str:
     raise ValueError(f"Unsupported video encoder: {video_encoder}")
 
 
-def _append_video_encoder_args(cmd: List[str], video_encoder: str, preset: str, quality_level: int) -> None:
+def _append_delivery_rate_caps(cmd: List[str]) -> None:
+    """Append YouTube-1080p-like VBR bitrate caps for the final delivery encode."""
+    cmd.extend([
+        '-b:v', DELIVERY_VIDEO_BITRATE,
+        '-maxrate', DELIVERY_VIDEO_MAXRATE,
+        '-bufsize', DELIVERY_VIDEO_BUFSIZE,
+    ])
+
+
+def _append_video_encoder_args(
+    cmd: List[str],
+    video_encoder: str,
+    preset: str,
+    quality_level: int,
+    *,
+    delivery: bool = False,
+) -> None:
     mapped_preset = _map_encoder_preset(video_encoder, preset)
     if video_encoder == 'libx264':
         cmd.extend([
@@ -202,6 +231,8 @@ def _append_video_encoder_args(cmd: List[str], video_encoder: str, preset: str, 
             '-preset', mapped_preset,
             '-crf', str(quality_level),
         ])
+        if delivery:
+            _append_delivery_rate_caps(cmd)
         return
     if video_encoder == 'h264_nvenc':
         cmd.extend([
@@ -210,8 +241,12 @@ def _append_video_encoder_args(cmd: List[str], video_encoder: str, preset: str, 
             '-tune', 'hq',
             '-rc', 'vbr',
             '-cq', str(quality_level),
-            '-b:v', '0',
         ])
+        if delivery:
+            _append_delivery_rate_caps(cmd)
+        else:
+            # Unconstrained CQ for intermediate segments (speed-focused).
+            cmd.extend(['-b:v', '0'])
         return
     if video_encoder == 'h264_qsv':
         cmd.extend([
@@ -219,6 +254,8 @@ def _append_video_encoder_args(cmd: List[str], video_encoder: str, preset: str, 
             '-preset', mapped_preset,
             '-global_quality', str(quality_level),
         ])
+        if delivery:
+            _append_delivery_rate_caps(cmd)
         return
     if video_encoder == 'h264_amf':
         cmd.extend([
@@ -227,6 +264,8 @@ def _append_video_encoder_args(cmd: List[str], video_encoder: str, preset: str, 
             '-rc', 'qvbr',
             '-qvbr_quality_level', str(quality_level),
         ])
+        if delivery:
+            _append_delivery_rate_caps(cmd)
         return
     raise ValueError(f"Unsupported video encoder: {video_encoder}")
 
@@ -270,23 +309,33 @@ def _pick_auto_hardware_encoder(stage_default_preset: str) -> str:
     return 'libx264'
 
 
+def _hardware_encode_requested() -> bool:
+    """
+    Whether to auto-pick NVENC/QSV/AMF when --video-encoder is libx264.
+
+    Default is on (empty/unset env). Explicitly disable with
+    ``PODCAST_DSL_HARDWARE_ENCODE=0`` / ``false`` / ``no`` (CLI: ``--no-hardware-encode``).
+    """
+    raw = os.environ.get(VIDEO_HARDWARE_ENCODE_ENV)
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() not in ('0', 'false', 'no', 'off')
+
+
 def _resolved_video_encoder(stage_default_preset: str) -> str:
     """
     Resolve which H.264 encoder FFmpeg should use for a pipeline stage.
 
-    Default is libx264. Auto hardware probing runs only when the
-    ``PODCAST_DSL_HARDWARE_ENCODE`` environment variable is set (CLI: ``--hardware-encode``)
-    or when the user passes ``--video-encoder auto`` (legacy alias for that path).
-    Explicit h264_nvenc / h264_qsv / h264_amf are returned as-is (with runtime libx264
-    fallback in _run_ffmpeg_h264_encode_with_fallback when those fail mid-render).
+    Default path: try a working hardware H.264 encoder (NVENC, then QSV, then AMF)
+    and fall back to libx264. Disable with ``PODCAST_DSL_HARDWARE_ENCODE=0``
+    (CLI: ``--no-hardware-encode``). ``--video-encoder auto`` is a legacy alias
+    for the same auto-selection. Explicit h264_nvenc / h264_qsv / h264_amf are
+    returned as-is (with runtime libx264 fallback in
+    _run_ffmpeg_h264_encode_with_fallback when those fail mid-render).
     """
     raw = (os.environ.get(VIDEO_ENCODER_ENV) or DEFAULT_VIDEO_ENCODER).strip()
     enc_env = raw.lower()
-    hw_flag = os.environ.get(VIDEO_HARDWARE_ENCODE_ENV, '').strip().lower() in (
-        '1',
-        'true',
-        'yes',
-    )
+    hw_flag = _hardware_encode_requested()
     preset_raw = os.environ.get(VIDEO_PRESET_ENV, '').strip()
     key = (stage_default_preset, enc_env, hw_flag, preset_raw)
     if key in _resolved_encoder_memo:
@@ -325,10 +374,13 @@ def _run_ffmpeg_h264_encode_with_fallback(
     use_cache: bool,
     err_context: str,
     cache_extension: str = '.mp4',
+    delivery: bool = False,
 ) -> None:
     """
     Append H.264 encoder args and output_path, run FFmpeg; if a hardware encoder fails,
     retry once with libx264 (separate cache key when caching is enabled).
+
+    When ``delivery`` is True, apply YouTube-1080p-like VBR bitrate caps (~8 Mbps).
     """
     preset = _requested_video_preset(stage_default_preset)
     primary = _resolved_video_encoder(stage_default_preset)
@@ -336,7 +388,7 @@ def _run_ffmpeg_h264_encode_with_fallback(
 
     for attempt_idx, enc in enumerate(_encoder_attempt_chain(primary)):
         cmd = list(cmd_prefix)
-        _append_video_encoder_args(cmd, enc, preset, quality_level)
+        _append_video_encoder_args(cmd, enc, preset, quality_level, delivery=delivery)
         cmd.append(output_path)
 
         if attempt_idx > 0:
@@ -2357,17 +2409,18 @@ def _render_dsl_from_commands(commands: List, output_file: str, dsl_file: str = 
             '-pix_fmt', 'yuv420p',
             '-movflags', '+faststart',
             '-c:a', 'aac',
-            '-b:a', '320k',  # High bitrate for quality
+            '-b:a', DELIVERY_AUDIO_BITRATE,  # Speech-friendly AAC (YouTube-like)
             '-aac_coder', 'twoloop',  # Better quality AAC encoding
         ]
         try:
             _run_ffmpeg_h264_encode_with_fallback(
                 cmd,
                 final_output_tmp,
-                stage_default_preset='fast',
-                quality_level=18,
+                stage_default_preset='fast',  # NVENC → p4
+                quality_level=DELIVERY_QUALITY_LEVEL,
                 use_cache=False,
                 err_context='final AAC/MP4 conversion',
+                delivery=True,
             )
         except RuntimeError as exc:
             raise RuntimeError(

@@ -59,6 +59,8 @@ def render_dsl(
         str(output_mp4),
         "--workers",
         str(workers),
+        # Prefer NVENC/QSV/AMF with libx264 fallback (podcast_dsl default; explicit for PIAB).
+        "--hardware-encode",
     ]
     if max_seconds is not None:
         cmd.extend(["--max-seconds", str(max_seconds)])

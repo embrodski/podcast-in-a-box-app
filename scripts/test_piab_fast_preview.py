@@ -335,6 +335,7 @@ class FastPreviewLibTests(unittest.TestCase):
 
 class SkipPreviewApprovalTests(unittest.TestCase):
     def test_skip_preview_records_approval_without_one_min_file(self) -> None:
+        from episode_segments import MAIN_SEGMENT_KEY
         from piab_approve_fast_preview import approve_fast_preview
         from piab_fast_preview_lib import preview_approval_was_skipped
         from piab_lib import save_piab_state
@@ -362,10 +363,105 @@ class SkipPreviewApprovalTests(unittest.TestCase):
             self.assertTrue(preview_approval_was_skipped(result))
             self.assertTrue((result.get("fast_preview_approval") or {}).get("approved_at"))
             self.assertEqual(result.get("resume_at"), "13_queued_full")
+            self.assertEqual(result.get("main_segment_id"), MAIN_SEGMENT_KEY)
+            # Gate in piab_run_full_render: needs interview_dsl or main_segment_id.
+            self.assertTrue(result.get("interview_dsl") or result.get("main_segment_id"))
             self.assertEqual(
                 (result.get("steps") or {}).get("11_one_min_approval", {}).get("status"),
                 "completed",
             )
+
+    def test_full_after_preview_sets_main_segment_id(self) -> None:
+        """After prep, state must carry main_segment_id so --rebuild-dsl can run."""
+        from episode_segments import MAIN_SEGMENT_KEY
+
+        with tempfile.TemporaryDirectory() as tmp:
+            working = Path(tmp)
+            (working / "Raw").mkdir()
+            (working / "Input").mkdir()
+            (working / "Temp").mkdir()
+            (working / "Output").mkdir()
+            state = {
+                "kind": "podcast_in_a_box",
+                "name": "full-after",
+                "sync_offset_choice": "no_offset",
+                "paths": {
+                    "raw": str(working / "Raw"),
+                    "input": str(working / "Input"),
+                    "temp": str(working / "Temp"),
+                    "output": str(working / "Output"),
+                },
+                "steps": {},
+                "fast_preview_approval": {
+                    "approved_at": "2026-01-01T00:00:00+00:00",
+                    "skipped_preview": True,
+                },
+            }
+            from piab_lib import load_piab_state, save_piab_state
+
+            save_piab_state(working, state)
+
+            fake_prep = {
+                "input_dir": str(working / "Input"),
+                "temp_dir": str(working / "Temp"),
+                "synced": [],
+                "prepped_videos": [
+                    str(working / "Input" / "Host Video-prepped.mp4"),
+                    str(working / "Input" / "Guest Video-prepped.mp4"),
+                    str(working / "Input" / "Wide Video-prepped.mp4"),
+                ],
+                "prepped_audio_wav": str(working / "Input" / "Host Clean Audio-prepped.wav"),
+                "sync_reports": None,
+            }
+            transcript = working / "Input" / "Host Clean Audio-prepped Transcript.json"
+            transcript.write_text("{}", encoding="utf-8")
+
+            with (
+                patch(
+                    "piab_run_full_after_preview.find_conversation_wav_pair",
+                    return_value=(working / "Raw" / "a.wav", working / "Raw" / "b.wav"),
+                ),
+                patch(
+                    "piab_run_full_after_preview.combined_audio_output_name",
+                    return_value="Host Combined Audio.wav",
+                ),
+                patch(
+                    "piab_run_full_after_preview.run_conversation_sync",
+                    return_value=working / "Raw" / "Host Combined Audio.wav",
+                ),
+                patch(
+                    "piab_run_full_after_preview.find_scope_videos",
+                    return_value=[],
+                ),
+                patch(
+                    "piab_run_full_after_preview.run_video_sync",
+                    return_value=fake_prep,
+                ),
+                patch(
+                    "piab_run_full_after_preview.read_elevenlabs_api_key",
+                    return_value="test-key",
+                ),
+                patch(
+                    "piab_run_full_after_preview._run_transcribe",
+                    return_value=transcript,
+                ),
+                patch(
+                    "piab_run_full_after_preview.write_canonical_main_segments",
+                    return_value=working / "Temp" / "segments.json",
+                ),
+                patch(
+                    "piab_run_full_after_preview._alias_combined_as_clean",
+                    return_value=working / "Raw" / "Host Clean Audio.wav",
+                ),
+            ):
+                from piab_run_full_after_preview import run_full_prep_after_preview
+
+                (working / "Raw" / "Host Combined Audio.wav").write_bytes(b"RIFF")
+                run_full_prep_after_preview(working, allow_overwrite=True)
+
+            saved = load_piab_state(working)
+            self.assertEqual(saved.get("main_segment_id"), MAIN_SEGMENT_KEY)
+            self.assertTrue(saved.get("interview_dsl") or saved.get("main_segment_id"))
 
 
 if __name__ == "__main__":

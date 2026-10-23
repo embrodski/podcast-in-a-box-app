@@ -38,6 +38,7 @@ from podcast_dsl.video_renderer import (
     VIDEO_HARDWARE_ENCODE_ENV,
     _append_video_encoder_args,
     _encoder_attempt_chain,
+    _hardware_encode_requested,
     _requested_video_preset,
     _resolved_video_encoder,
 )
@@ -359,7 +360,7 @@ def stitch_episode(
 
     print("Stitching episode parts with ffmpeg (this can take a while for long interviews)...")
     print(f"Video encoder (requested): {video_encoder}")
-    if video_encoder == "auto" or os.environ.get(VIDEO_HARDWARE_ENCODE_ENV):
+    if video_encoder == "auto" or _hardware_encode_requested():
         print(f"Resolved encoder: {primary}")
     print(f"Video preset: {video_preset}")
     print(f"Video quality: {video_quality}")
@@ -417,14 +418,18 @@ def main() -> int:
         choices=VIDEO_ENCODER_CHOICES,
         default=DEFAULT_VIDEO_ENCODER,
         help=(
-            "Video encoder for the stitched output (default: libx264). "
-            "Use --hardware-encode to auto-pick NVENC/QSV/AMF with libx264 fallback."
+            "Video encoder for the stitched output (default: libx264 name + hardware auto-pick). "
+            "Use --no-hardware-encode for software-only libx264."
         ),
     )
     ap.add_argument(
         "--hardware-encode",
-        action="store_true",
-        help="Try hardware encoders (NVENC / QSV / AMF) with libx264 fallback, like podcast_dsl.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Try hardware encoders (NVENC / QSV / AMF) with libx264 fallback "
+            "(default: on). Use --no-hardware-encode for software-only."
+        ),
     )
     ap.add_argument(
         "--video-preset",
@@ -466,10 +471,7 @@ def main() -> int:
         input_files = None
 
     os.environ["PODCAST_DSL_VIDEO_ENCODER"] = args.video_encoder
-    if args.hardware_encode:
-        os.environ[VIDEO_HARDWARE_ENCODE_ENV] = "1"
-    else:
-        os.environ.pop(VIDEO_HARDWARE_ENCODE_ENV, None)
+    os.environ[VIDEO_HARDWARE_ENCODE_ENV] = "1" if args.hardware_encode else "0"
     os.environ["PODCAST_DSL_VIDEO_PRESET"] = args.video_preset
 
     try:

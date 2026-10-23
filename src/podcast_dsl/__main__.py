@@ -78,19 +78,22 @@ Examples:
         choices=['auto', 'libx264', 'h264_nvenc', 'h264_qsv', 'h264_amf'],
         default=DEFAULT_VIDEO_ENCODER,
         help=(
-            'Video encoder for re-encoded stages (default: libx264). '
-            'Use --hardware-encode to auto-pick a working hardware encoder with libx264 fallback. '
+            'Video encoder for re-encoded stages (default: libx264 name, with hardware '
+            'auto-pick when --hardware-encode is on). '
+            'Use --no-hardware-encode for software-only libx264. '
             '"auto" is legacy: same hardware auto-selection as --hardware-encode.'
         ),
     )
     parser.add_argument(
         '--hardware-encode',
-        action='store_true',
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            'When --video-encoder is the default libx264, try NVENC / QSV / AMF in order first, '
-            'falling back to libx264 if none work or if a hardware encode fails mid-render. '
-            'Does not change the first encoder when you already pass a hardware --video-encoder, '
-            'but libx264 fallback still runs if that hardware encode fails.'
+            'When --video-encoder is libx264, try NVENC / QSV / AMF in order first '
+            '(default: on), falling back to libx264 if none work or if a hardware encode '
+            'fails mid-render. Use --no-hardware-encode for software-only. '
+            'Does not change the first encoder when you already pass a hardware '
+            '--video-encoder, but libx264 fallback still runs if that hardware encode fails.'
         ),
     )
     parser.add_argument(
@@ -138,10 +141,8 @@ Examples:
             )
 
     os.environ[VIDEO_ENCODER_ENV] = args.video_encoder
-    if args.hardware_encode:
-        os.environ[VIDEO_HARDWARE_ENCODE_ENV] = '1'
-    else:
-        os.environ.pop(VIDEO_HARDWARE_ENCODE_ENV, None)
+    # Always set explicitly so --no-hardware-encode is not treated as "env unset → default on".
+    os.environ[VIDEO_HARDWARE_ENCODE_ENV] = '1' if args.hardware_encode else '0'
     if args.video_preset:
         os.environ[VIDEO_PRESET_ENV] = args.video_preset
     else:
@@ -244,6 +245,8 @@ Examples:
             cmd.extend(['--video-encoder', args.video_encoder])
         if args.hardware_encode:
             cmd.append('--hardware-encode')
+        else:
+            cmd.append('--no-hardware-encode')
         if args.video_preset:
             cmd.extend(['--video-preset', args.video_preset])
         if args.dry_run:

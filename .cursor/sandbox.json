@@ -1,0 +1,17 @@
+{
+  // Workspace sandbox: let sandboxed commands reach PodcastRoom session trees
+  // and crash-dump forensics paths used by this project's agent rules.
+  "type": "workspace_readwrite",
+  "enableSharedBuildCache": true,
+  "networkPolicy": {
+    "default": "allow"
+  },
+  "additionalReadwritePaths": [
+    "E:\\PodcastRoom",
+    "E:\\PodcastRoom\\PodcastInABox\\Sessions",
+    "E:\\PodcastRoom\\PodcastInABox\\Temp"
+  ],
+  "additionalReadonlyPaths": [
+    "D:\\Crash Report"
+  ]
+}
